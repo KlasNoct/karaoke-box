@@ -56,7 +56,7 @@ async function lrcSearch(artist, title) {
 // To update: visit replicate.com/cjwbw/demucs or replicate.com/openai/whisper
 // → click the "API" tab → copy the hash shown at the top.
 const DEMUCS_VERSION  = '25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953';
-const WHISPER_VERSION = '4d50797290df275329f202e48c76360b3f22b08d28c196cbc54600319435f8d2';
+const WHISPER_VERSION = '8099696689d249cf8b122d833c36ac3f75505c666a395ca40ef26f68e7d3d16e';
 
 // ── Replicate API — goes through /api/replicate (Vercel proxy) ──────────────
 // This avoids CORS issues and keeps the API key server-side.
