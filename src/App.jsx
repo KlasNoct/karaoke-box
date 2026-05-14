@@ -267,7 +267,7 @@ function AddSongScreen({ onSave, onBack }) {
 
       // Small gap before second request — avoids hitting the burst-of-1 rate limit
       // on Replicate accounts with low credit balance.
-      await sleep(2000);
+      await sleep(12000);
 
       // Start Whisper (transcription) — skip if LRClib already found synced lyrics.
       setWhisperState(p => ({ ...p, status: skipWhisper ? 'skipped_lrc' : 'running' }));
