@@ -51,14 +51,21 @@ async function lrcSearch(artist, title) {
   } catch { return null; }
 }
 
+// ── Replicate model version hashes ───────────────────────────────────────────
+// Using explicit version hashes is more reliable than model-name-only calls.
+// To update: visit replicate.com/cjwbw/demucs or replicate.com/openai/whisper
+// → click the "API" tab → copy the hash shown at the top.
+const DEMUCS_VERSION  = '25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953';
+const WHISPER_VERSION = '4d50797290df275329f202e48c76360b3f22b08d28c196cbc54600319435f8d2';
+
 // ── Replicate API — goes through /api/replicate (Vercel proxy) ──────────────
 // This avoids CORS issues and keeps the API key server-side.
 
-async function repCreate(model, input) {
+async function repCreate(version, input) {
   const r = await fetch('/api/replicate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'create', model, input }),
+    body: JSON.stringify({ action: 'create', version, input }),
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
@@ -244,30 +251,42 @@ function AddSongScreen({ onSave, onBack }) {
       const skipWhisper = lrcResult?.synced?.length > 0;
 
       setStage('processing');
-      setDemucsState(p => ({ ...p, status: 'running' }));
-      setWhisperState(p => ({ ...p, status: skipWhisper ? 'skipped_lrc' : 'running' }));
-      startTick('demucs', setDemucsState);
-      if (!skipWhisper) startTick('whisper', setWhisperState);
 
-      // Start both predictions in parallel
-      const predIds = await Promise.all([
-        repCreate('cjwbw/demucs', { audio: audioUrl, jobs: 0 }),
-        skipWhisper
-          ? Promise.resolve(null)
-          : repCreate('openai/whisper', {
-              audio: audioUrl,
-              word_timestamps: false,
-              temperature: 0,
-            }),
-      ]);
+      // Start Demucs first (vocal separation).
+      // stem:'vocals' gives us two outputs: the isolated vocals + the no_vocals instrumental.
+      setDemucsState(p => ({ ...p, status: 'running' }));
+      startTick('demucs', setDemucsState);
+      const demucsId = await repCreate(DEMUCS_VERSION, {
+        audio: audioUrl,
+        model_name: 'htdemucs',
+        stem: 'vocals',
+        shifts: 1,
+        overlap: 0.25,
+        output_format: 'mp3',
+      });
+
+      // Small gap before second request — avoids hitting the burst-of-1 rate limit
+      // on Replicate accounts with low credit balance.
+      await sleep(2000);
+
+      // Start Whisper (transcription) — skip if LRClib already found synced lyrics.
+      setWhisperState(p => ({ ...p, status: skipWhisper ? 'skipped_lrc' : 'running' }));
+      if (!skipWhisper) startTick('whisper', setWhisperState);
+      const whisperPredId = skipWhisper
+        ? null
+        : await repCreate(WHISPER_VERSION, {
+            audio: audioUrl,
+            word_timestamps: false,
+            temperature: 0,
+          });
       if (cancelRef.current.aborted) return;
 
       let instrumentalUrl = null, lyrics = [], lyricsType = 'none';
       let demucsErr = null, whisperErr = null;
 
-      // Poll both concurrently
+      // Poll both concurrently (polling is cheap — no rate limit impact)
       await Promise.allSettled([
-        repPoll(predIds[0], (st, el) => {
+        repPoll(demucsId, (st, el) => {
           if (!cancelRef.current.aborted)
             setDemucsState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el });
         }, cancelRef.current).then(async out => {
@@ -281,8 +300,8 @@ function AddSongScreen({ onSave, onBack }) {
           setDemucsState(p => ({ ...p, status: 'error' }));
         }),
 
-        predIds[1]
-          ? repPoll(predIds[1], (st, el) => {
+        whisperPredId
+          ? repPoll(whisperPredId, (st, el) => {
               if (!cancelRef.current.aborted)
                 setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el });
             }, cancelRef.current).then(out => {
