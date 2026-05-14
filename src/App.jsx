@@ -1,4 +1,25 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { createClient } from '@supabase/supabase-js';
+
+// ── Supabase client ───────────────────────────────────────────────────────────
+// Credentials are intentionally in the browser — Supabase is designed for this.
+const SUPA_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = SUPA_URL && SUPA_KEY ? createClient(SUPA_URL, SUPA_KEY) : null;
+
+async function uploadAudioToSupabase(file) {
+  if (!supabase) throw new Error(
+    'Supabase not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars, then redeploy.'
+  );
+  const ext = file.name.split('.').pop() || 'mp3';
+  const path = `originals/${Date.now()}.${ext}`;
+  const { error } = await supabase.storage
+    .from('songs')
+    .upload(path, file, { upsert: false });
+  if (error) throw new Error(`Audio upload failed: ${error.message}`);
+  const { data } = supabase.storage.from('songs').getPublicUrl(path);
+  return data.publicUrl;
+}
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -88,16 +109,6 @@ function getInstrumental(out) {
   return out.no_vocals || out.accompaniment
     || Object.entries(out).find(([k, v]) => !k.includes('vocal') && typeof v === 'string')?.[1]
     || Object.values(out).find(v => typeof v === 'string') || null;
-}
-
-// Convert a File to a base64 data URI (sent to Replicate as the audio input)
-function fileToDataUri(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
 }
 
 // Fetch a remote URL and create a local blob URL (for storing Replicate output)
@@ -222,9 +233,10 @@ function AddSongScreen({ onSave, onBack }) {
     setResult(null); setErrorMsg('');
 
     try {
-      // Convert file to base64 data URI (sent to Replicate as audio input)
+      // Upload audio to Supabase Storage, then pass the public URL to Replicate.
+      // This avoids sending large files through Vercel (which has a 4.5MB limit).
       setStage('uploading');
-      const audioDataUri = await fileToDataUri(origFile);
+      const audioUrl = await uploadAudioToSupabase(origFile);
       if (cancelRef.current.aborted) return;
 
       // Try LRClib first — free and instant, saves Whisper credits if found
@@ -239,11 +251,11 @@ function AddSongScreen({ onSave, onBack }) {
 
       // Start both predictions in parallel
       const predIds = await Promise.all([
-        repCreate('cjwbw/demucs', { audio: audioDataUri, jobs: 0 }),
+        repCreate('cjwbw/demucs', { audio: audioUrl, jobs: 0 }),
         skipWhisper
           ? Promise.resolve(null)
           : repCreate('openai/whisper', {
-              audio: audioDataUri,
+              audio: audioUrl,
               word_timestamps: false,
               temperature: 0,
             }),
@@ -324,10 +336,10 @@ function AddSongScreen({ onSave, onBack }) {
   // ── Uploading ──
   if (stage === 'uploading') return (
     <div className="screen" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, textAlign: 'center', padding: '0 32px' }}>
-      <i className="ti ti-upload spin" style={{ fontSize: 40, color: 'var(--muted)' }} aria-hidden="true" />
-      <p style={{ fontWeight: 700, fontSize: 16 }}>Preparing "{title}"…</p>
+      <i className="ti ti-cloud-upload spin" style={{ fontSize: 40, color: 'var(--muted)' }} aria-hidden="true" />
+      <p style={{ fontWeight: 700, fontSize: 16 }}>Uploading "{title}"…</p>
       <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>
-        Converting audio for Replicate. Large files may take a moment.
+        Saving to Supabase storage, then sending to Replicate.
       </p>
     </div>
   );
