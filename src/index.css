@@ -744,3 +744,23 @@ textarea { resize: vertical; line-height: 1.7; }
 .cinematic-guide-panel .guide-slider {
   width: clamp(200px, 50vw, 480px);
 }
+
+/* ── Shuffle button (next to search bar) ─────────────────────────────────────── */
+.shuffle-btn {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: var(--radius);
+  background: var(--elevated);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 20px;
+  transition: color 0.15s, background 0.15s;
+}
+.shuffle-btn:hover:not(:disabled)  { color: var(--amber); }
+.shuffle-btn:active:not(:disabled) { transform: scale(0.94); }
+.shuffle-btn:disabled              { opacity: 0.3; cursor: not-allowed; }

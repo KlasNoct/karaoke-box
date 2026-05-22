@@ -189,7 +189,7 @@ const EDITOR_COLORS = [
 
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
-function LibraryScreen({ songs, onPlay, onEdit, onDelete }) {
+function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
   const [q, setQ] = useState('');
   const filtered = songs.filter(s => s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase()));
   return (
@@ -197,9 +197,16 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete }) {
       <div className="page-header">
         <div><div className="page-title">🎤 KaraKlas</div><div className="page-sub">{songs.length} song{songs.length !== 1 ? 's' : ''} in your box</div></div>
       </div>
-      <div className="search-wrap">
-        <i className="ti ti-search search-icon" aria-hidden="true" />
-        <input placeholder="Search songs…" value={q} onChange={e => setQ(e.target.value)} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 18px 12px' }}>
+        <div className="search-wrap" style={{ flex: 1, margin: 0, padding: 0 }}>
+          <i className="ti ti-search search-icon" aria-hidden="true" />
+          <input placeholder="Search songs…" value={q} onChange={e => setQ(e.target.value)} />
+        </div>
+        <button className="shuffle-btn" onClick={onStartRandom}
+          disabled={songs.filter(s => s.hasAudio).length < 2}
+          aria-label="Shuffle play" title="Shuffle — play random songs">
+          <i className="ti ti-arrows-shuffle" aria-hidden="true" />
+        </button>
       </div>
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
@@ -393,9 +400,6 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   const audioRef   = useRef(null);
   const guideRef   = useRef(null);
   const rafRef     = useRef(null);
-  const lpRafRef   = useRef(null);
-  const lpTimerRef = useRef(null);
-  const lpDone     = useRef(false);
   const stateRef   = useRef({});
 
   const [playing, setPlaying]             = useState(false);
@@ -404,8 +408,6 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   const [activeLine, setActiveLine]       = useState(-1);
   const [guideVolume, setGuideVolume]     = useState(settings?.defaultGuideVolume ?? 0);
   const [guideExpanded, setGuideExpanded] = useState(false);
-  const [pressProgress, setPressProgress] = useState(0);
-  const [longPressing, setLongPressing]   = useState(false);
 
   // Responsive — true on desktop (≥768px), triggers cinematic layout
   const [isCinematic, setIsCinematic] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
@@ -421,7 +423,6 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   useEffect(() => {
     setPlaying(false); setCurrentTime(0); setDuration(0); setActiveLine(-1);
     setGuideExpanded(false); setGuideVolume(settings?.defaultGuideVolume ?? 0);
-    setPressProgress(0); setLongPressing(false); lpDone.current = false;
     if (autoPlay) {
       const t = setTimeout(() => setPlaying(true), 150);
       return () => clearTimeout(t);
@@ -457,15 +458,6 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     else if (guideVolume === 0) guide.pause();
   }, [guideVolume]);
 
-  // ── Long-press animation (visual only) ────────────────────────────────────
-  useEffect(() => {
-    if (!longPressing) { setPressProgress(0); return; }
-    const start = Date.now();
-    const frame = () => { const p = Math.min(1, (Date.now() - start) / 650); setPressProgress(p); if (p < 1) lpRafRef.current = requestAnimationFrame(frame); };
-    lpRafRef.current = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(lpRafRef.current);
-  }, [longPressing]);
-
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
     function onKey(e) {
@@ -489,12 +481,6 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   function seek(e) { const r = e.currentTarget.getBoundingClientRect(); const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (duration || 0); if (audioRef.current) audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); }
   function handleRestart() { if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); } if (guideRef.current) guideRef.current.currentTime = 0; }
   function handleSkip() { if (randomMode) { onSkipRandom?.(); return; } if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); } }
-
-  // Play button — onClick for reliable short press, setTimeout for long press
-  function handlePlayClick() { if (lpDone.current) { lpDone.current = false; return; } setPlaying(p => !p); }
-  function handlePlayPointerDown() { lpDone.current = false; setLongPressing(true); clearTimeout(lpTimerRef.current); lpTimerRef.current = setTimeout(() => { lpDone.current = true; setLongPressing(false); if (!stateRef.current.randomMode) onStartRandom?.(); }, 650); }
-  function handlePlayPointerUp() { clearTimeout(lpTimerRef.current); setLongPressing(false); }
-  function handlePlayPointerLeave() { clearTimeout(lpTimerRef.current); setLongPressing(false); }
 
   // ── Shared render pieces ───────────────────────────────────────────────────
   const lyrics     = song.lyrics || [];
@@ -534,12 +520,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   const nextUpCard = showNextUp && (() => { const nc = songColor(nextUpSong); return (<div className="next-up-card" onClick={() => onSkipRandom?.()}><div className="song-avatar" style={{ background: nc.bg, color: nc.fg, width: 36, height: 36, fontSize: 15, flexShrink: 0 }}>{nextUpSong.title[0]?.toUpperCase()}</div><div style={{ flex: 1, minWidth: 0 }}><p className="next-up-label">Up next</p><p className="next-up-title">{nextUpSong.title}</p><p className="next-up-artist">{nextUpSong.artist}</p></div><i className="ti ti-chevron-right" style={{ fontSize: 16, color: 'var(--muted)', flexShrink: 0 }} aria-hidden="true" /></div>); })();
 
   const playBtn = (
-    <div style={{ position: 'relative', width: 66, height: 66, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      {pressProgress > 0 && (<svg style={{ position: 'absolute', inset: -5, width: 76, height: 76, pointerEvents: 'none' }} viewBox="0 0 76 76"><circle cx="38" cy="38" r="35" fill="none" stroke="rgba(165,94,234,0.25)" strokeWidth="3" /><circle cx="38" cy="38" r="35" fill="none" stroke="#A55EEA" strokeWidth="3" strokeDasharray={`${pressProgress * 2 * Math.PI * 35} ${2 * Math.PI * 35}`} strokeLinecap="round" transform="rotate(-90 38 38)" /></svg>)}
-      <button className="play-btn" style={{ background: longPressing ? 'rgba(165,94,234,0.9)' : undefined }} onClick={handlePlayClick} onPointerDown={handlePlayPointerDown} onPointerUp={handlePlayPointerUp} onPointerLeave={handlePlayPointerLeave} disabled={!song.hasAudio} aria-label={playing ? 'Pause' : 'Play — hold for random'}>
-        <i className={`ti ${playing ? 'ti-player-pause' : 'ti-player-play'}`} aria-hidden="true" />
-      </button>
-    </div>
+    <button className="play-btn" onClick={() => setPlaying(p => !p)}
+      disabled={!song.hasAudio} aria-label={playing ? 'Pause' : 'Play'}>
+      <i className={`ti ${playing ? 'ti-player-pause' : 'ti-player-play'}`} aria-hidden="true" />
+    </button>
   );
 
   const hintLine = <p style={{ textAlign: 'center', fontSize: 10, color: 'rgba(91,98,128,0.4)', padding: '0 0 8px', margin: 0 }}>Space · Esc · ← → · M · R · F</p>;
@@ -728,7 +712,7 @@ export default function App() {
     <div className="app-shell">
       {loading && (<div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading your library…</div>)}
       {!loading && (<>
-        {tab === 'library'  && <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} />}
+        {tab === 'library'  && <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} onStartRandom={startRandomMode} />}
         {tab === 'add'      && <AddSongScreen onSave={handleAddSong} />}
         {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} />}
         <nav className="bottom-nav">
