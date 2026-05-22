@@ -203,7 +203,7 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
           <input placeholder="Search songs…" value={q} onChange={e => setQ(e.target.value)} />
         </div>
         <button className="shuffle-btn" onClick={onStartRandom}
-          disabled={songs.filter(s => s.hasAudio).length < 2}
+          disabled={songs.filter(s => s.hasAudio || s.audioUrl).length < 2}
           aria-label="Shuffle play" title="Shuffle — play random songs">
           <i className="ti ti-arrows-shuffle" aria-hidden="true" />
         </button>
@@ -218,7 +218,7 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
               <div className="song-artist">{song.artist || 'Unknown artist'}</div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, flexShrink: 0 }}>
-              {song.hasAudio && <span className="badge badge-green badge-xs">Ready</span>}
+              {(song.hasAudio || song.audioUrl) && <span className="badge badge-green badge-xs">Ready</span>}
               {song.lyricsType === 'synced' && <span className="badge badge-blue badge-xs">Synced</span>}
             </div>
             <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
@@ -408,6 +408,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   const [activeLine, setActiveLine]       = useState(-1);
   const [guideVolume, setGuideVolume]     = useState(settings?.defaultGuideVolume ?? 0);
   const [guideExpanded, setGuideExpanded] = useState(false);
+  const [playError, setPlayError]         = useState(null);
 
   // Responsive — true on desktop (≥768px), triggers cinematic layout
   const [isCinematic, setIsCinematic] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
@@ -423,6 +424,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   useEffect(() => {
     setPlaying(false); setCurrentTime(0); setDuration(0); setActiveLine(-1);
     setGuideExpanded(false); setGuideVolume(settings?.defaultGuideVolume ?? 0);
+    setPlayError(null);
     if (autoPlay) {
       const t = setTimeout(() => setPlaying(true), 150);
       return () => clearTimeout(t);
@@ -442,7 +444,15 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   useEffect(() => {
     const main = audioRef.current; const guide = guideRef.current; if (!main) return;
     if (playing) {
-      main.play().catch(err => { console.warn('Playback failed:', err.message); if (song.audioUrl?.startsWith('blob:')) console.warn('Expired blob URL — re-add this song to get a permanent URL'); setPlaying(false); });
+      main.play().catch(err => {
+        console.error('Playback failed:', err.message, song.audioUrl);
+        setPlaying(false);
+        if (song.audioUrl?.startsWith('blob:')) {
+          setPlayError('Audio expired — this song was added in an older session. Re-add it using Auto mode to fix this permanently.');
+        } else {
+          setPlayError(`Could not play audio. (${err.message})`);
+        }
+      });
       if (guide && guideVolume > 0) { guide.currentTime = main.currentTime; guide.play().catch(() => {}); }
       const tick = () => { const t = main.currentTime; setCurrentTime(t); if (song.lyrics?.length > 0) { let idx = -1; for (let i = 0; i < song.lyrics.length; i++) { if (song.lyrics[i].time <= t) idx = i; else break; } setActiveLine(idx); } rafRef.current = requestAnimationFrame(tick); };
       rafRef.current = requestAnimationFrame(tick);
@@ -521,7 +531,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
 
   const playBtn = (
     <button className="play-btn" onClick={() => setPlaying(p => !p)}
-      disabled={!song.hasAudio} aria-label={playing ? 'Pause' : 'Play'}>
+      disabled={!song.audioUrl} aria-label={playing ? 'Pause' : 'Play'}>
       <i className={`ti ${playing ? 'ti-player-pause' : 'ti-player-play'}`} aria-hidden="true" />
     </button>
   );
@@ -541,10 +551,15 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
           <p style={{ flex: 1, fontSize: 14, color: 'rgba(200,205,230,0.65)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {song.title}{song.artist ? ` — ${song.artist}` : ''}
           </p>
-          {!song.hasAudio && <span className="badge badge-amber">No audio</span>}
+          {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
         </div>
 
         {/* Lyrics — takes all remaining space, large fonts via CSS */}
+        {playError && (
+          <div style={{ margin: '0 28px 8px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>
+            {playError}
+          </div>
+        )}
         {lyricsArea}
 
         {/* Next-up card */}
@@ -586,8 +601,13 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
         <div className="song-avatar" style={{ background: c.bg, color: c.fg, width: 44, height: 44, fontSize: 18 }}>{song.title[0]?.toUpperCase()}</div>
         <div className="player-meta"><div className="player-title">{song.title}</div><div className="player-artist">{song.artist || 'Unknown artist'}</div></div>
-        {!song.hasAudio && <span className="badge badge-amber">No audio</span>}
+        {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
       </div>
+      {playError && (
+        <div style={{ margin: '0 20px 6px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>
+          {playError}
+        </div>
+      )}
       {lyricsArea}
       {nextUpCard}
       <div className="progress-wrap"><div className="progress-track" onClick={seek}><div className="progress-fill" style={{ width: `${pct}%` }} /></div><div className="time-row"><span>{fmt(currentTime)}</span><span>{fmt(duration)}</span></div></div>
