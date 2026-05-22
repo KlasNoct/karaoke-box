@@ -42,7 +42,6 @@ async function saveSongData(song) {
   if (error) console.warn('Cloud save failed:', error.message);
 }
 
-// Archive a deleted song to deleted/ folder (keeps metadata + audio URLs for recovery)
 async function archiveDeletedSong(song) {
   if (!supabase) return;
   try {
@@ -57,7 +56,6 @@ async function archiveDeletedSong(song) {
         .upload(`deleted/${song.id}.json`, archived, { upsert: true, contentType: 'application/json' });
     }
   } catch (e) { console.warn('Could not archive to deleted/ folder:', e.message); }
-  // Always remove from active library
   await supabase.storage.from('songs').remove([`library/${song.id}.json`]);
 }
 
@@ -79,7 +77,7 @@ async function loadLibrary() {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 const SETTINGS_KEY = 'karaoke_settings';
-const loadSettings  = () => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } };
+const loadSettings   = () => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } };
 const persistSettings = s => { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch {} };
 
 // ── Replicate ─────────────────────────────────────────────────────────────────
@@ -153,15 +151,9 @@ function whisperToLines(out) {
 function getInstrumental(out) {
   if (!out) return null;
   if (typeof out === 'string') return out;
-  if (Array.isArray(out))
-    return out.find(u => typeof u === 'string' && u.includes('no_vocals'))
-      || out.find(u => typeof u === 'string' && !u.includes('vocals'))
-      || out.find(u => typeof u === 'string') || null;
-  return out.no_vocals || out.accompaniment
-    || Object.entries(out).find(([k, v]) => !k.includes('vocal') && typeof v === 'string')?.[1]
-    || Object.values(out).find(v => typeof v === 'string') || null;
+  if (Array.isArray(out)) return out.find(u => typeof u === 'string' && u.includes('no_vocals')) || out.find(u => typeof u === 'string' && !u.includes('vocals')) || out.find(u => typeof u === 'string') || null;
+  return out.no_vocals || out.accompaniment || Object.entries(out).find(([k, v]) => !k.includes('vocal') && typeof v === 'string')?.[1] || Object.values(out).find(v => typeof v === 'string') || null;
 }
-
 function getVocals(out) {
   if (!out) return null;
   if (typeof out === 'string') return null;
@@ -183,59 +175,35 @@ function pickRandomSong(songs, excludeId) {
 
 const sleep     = ms => new Promise(r => setTimeout(r, ms));
 const fmt       = s  => (!s || isNaN(s)) ? '0:00' : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-const parseTime = str => {
-  if (!str) return 0;
-  const parts = String(str).trim().split(':');
-  return parts.length === 2 ? (+parts[0] || 0) * 60 + (+parts[1] || 0) : +str || 0;
-};
+const parseTime = str => { if (!str) return 0; const p = String(str).trim().split(':'); return p.length === 2 ? (+p[0] || 0) * 60 + (+p[1] || 0) : +str || 0; };
 const uid = () => Math.random().toString(36).slice(2, 9);
 
-const AVATAR_COLORS = [
-  { bg: '#1a2a4a', fg: '#45aaf2' }, { bg: '#1a3a2a', fg: '#20bf6b' },
-  { bg: '#3a1a2a', fg: '#e8607a' }, { bg: '#3a2a0a', fg: '#f4a827' },
-];
+const AVATAR_COLORS = [{ bg: '#1a2a4a', fg: '#45aaf2' }, { bg: '#1a3a2a', fg: '#20bf6b' }, { bg: '#3a1a2a', fg: '#e8607a' }, { bg: '#3a2a0a', fg: '#f4a827' }];
 const songColor = s => AVATAR_COLORS[(s.title.charCodeAt(0) || 0) % AVATAR_COLORS.length];
 
 const EDITOR_COLORS = [
-  { hex: '#F4A827', name: 'Amber'  }, { hex: '#E8607A', name: 'Rose'   },
-  { hex: '#45AAF2', name: 'Sky'    }, { hex: '#20BF6B', name: 'Green'  },
-  { hex: '#A55EEA', name: 'Purple' }, { hex: '#8D93A1', name: 'Grey'   },
-  { hex: '#FC5C65', name: 'Coral'  }, { hex: '#A3CB38', name: 'Lime'   },
-  { hex: '#2BCBBA', name: 'Teal'   }, { hex: '#F7B731', name: 'Gold'   },
+  { hex: '#F4A827', name: 'Amber' }, { hex: '#E8607A', name: 'Rose' }, { hex: '#45AAF2', name: 'Sky' }, { hex: '#20BF6B', name: 'Green' },
+  { hex: '#A55EEA', name: 'Purple' }, { hex: '#8D93A1', name: 'Grey' }, { hex: '#FC5C65', name: 'Coral' }, { hex: '#A3CB38', name: 'Lime' },
+  { hex: '#2BCBBA', name: 'Teal' }, { hex: '#F7B731', name: 'Gold' },
 ];
 
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
 function LibraryScreen({ songs, onPlay, onEdit, onDelete }) {
   const [q, setQ] = useState('');
-  const filtered = songs.filter(s =>
-    s.title.toLowerCase().includes(q.toLowerCase()) ||
-    (s.artist || '').toLowerCase().includes(q.toLowerCase())
-  );
-
+  const filtered = songs.filter(s => s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase()));
   return (
     <div className="screen">
       <div className="page-header">
-        <div>
-          <div className="page-title">🎤 KaraKlas</div>
-          <div className="page-sub">{songs.length} song{songs.length !== 1 ? 's' : ''} in your box</div>
-        </div>
+        <div><div className="page-title">🎤 KaraKlas</div><div className="page-sub">{songs.length} song{songs.length !== 1 ? 's' : ''} in your box</div></div>
       </div>
       <div className="search-wrap">
         <i className="ti ti-search search-icon" aria-hidden="true" />
         <input placeholder="Search songs…" value={q} onChange={e => setQ(e.target.value)} />
       </div>
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {songs.length === 0 && (
-          <div className="empty-state">
-            <i className="ti ti-music" aria-hidden="true" />
-            <h3>Your box is empty</h3>
-            <p>Tap the + button below to add your first song.</p>
-          </div>
-        )}
-        {filtered.length === 0 && songs.length > 0 && (
-          <p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>No results for "{q}"</p>
-        )}
+        {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
+        {filtered.length === 0 && songs.length > 0 && (<p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>No results for "{q}"</p>)}
         {filtered.map(song => (
           <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onPlay(song)}>
             <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
@@ -243,18 +211,11 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete }) {
               <div className="song-artist">{song.artist || 'Unknown artist'}</div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, flexShrink: 0 }}>
-              {song.hasAudio      && <span className="badge badge-green badge-xs">Ready</span>}
+              {song.hasAudio && <span className="badge badge-green badge-xs">Ready</span>}
               {song.lyricsType === 'synced' && <span className="badge badge-blue badge-xs">Synced</span>}
             </div>
-            <button className="btn btn-ghost" style={{ padding: 7 }}
-              onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit">
-              <i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" />
-            </button>
-            <button className="btn btn-ghost" style={{ padding: 7 }}
-              onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${song.title}"?`)) onDelete(song); }}
-              aria-label="Delete">
-              <i className="ti ti-trash" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" />
-            </button>
+            <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
+            <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${song.title}"?`)) onDelete(song); }} aria-label="Delete"><i className="ti ti-trash" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
           </div>
         ))}
       </div>
@@ -265,119 +226,60 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete }) {
 
 // ── EDITOR SCREEN ─────────────────────────────────────────────────────────────
 function EditorScreen({ song, onSave, onBack }) {
-  const [localTitle,  setLocalTitle]  = useState(song.title  || '');
+  const [localTitle, setLocalTitle]   = useState(song.title  || '');
   const [localArtist, setLocalArtist] = useState(song.artist || '');
   const [lines, setLines]             = useState((song.lyrics || []).map(l => ({ id: uid(), color: null, words: [], ...l })));
   const [activeIdx, setActiveIdx]     = useState(null);
   const [saving, setSaving]           = useState(false);
 
-  function updateLine(idx, field, value) {
-    setLines(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l));
-  }
-  function deleteLine(idx, e) {
-    e?.stopPropagation();
-    setLines(prev => prev.filter((_, i) => i !== idx));
-    setActiveIdx(prev => prev === null || prev < idx ? prev : prev === idx ? null : prev - 1);
-  }
-  function addLine() {
-    const lastTime = lines[lines.length - 1]?.time || 0;
-    setLines(prev => [...prev, { id: uid(), time: lastTime + 3, text: '', color: null, words: [] }]);
-    setActiveIdx(lines.length);
-  }
+  function updateLine(idx, field, value) { setLines(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l)); }
+  function deleteLine(idx, e) { e?.stopPropagation(); setLines(prev => prev.filter((_, i) => i !== idx)); setActiveIdx(prev => prev === null || prev < idx ? prev : prev === idx ? null : prev - 1); }
+  function addLine() { const t = lines[lines.length - 1]?.time || 0; setLines(prev => [...prev, { id: uid(), time: t + 3, text: '', color: null, words: [] }]); setActiveIdx(lines.length); }
   async function handleSave() {
     setSaving(true);
     const sorted = [...lines].sort((a, b) => a.time - b.time);
-    await onSave({
-      ...song,
-      title:  localTitle.trim()  || song.title,
-      artist: localArtist.trim(),
-      lyrics: sorted,
-      lyricsType: sorted.length > 0 ? 'synced' : 'none',
-    });
+    await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none' });
     setSaving(false);
   }
 
   return (
     <div className="editor-shell">
       <div className="editor-header">
-        <button className="btn btn-ghost" style={{ padding: 8, flexShrink: 0 }} onClick={onBack}>
-          <i className="ti ti-arrow-left" style={{ fontSize: 20 }} aria-hidden="true" />
-        </button>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: 16, fontWeight: 800, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {localTitle || 'Edit song'}
-          </p>
-          <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{lines.length} lines · click a row to edit</p>
-        </div>
-        <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ flexShrink: 0 }}>
-          {saving ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Saving…</> : 'Save'}
-        </button>
+        <button className="btn btn-ghost" style={{ padding: 8, flexShrink: 0 }} onClick={onBack}><i className="ti ti-arrow-left" style={{ fontSize: 20 }} aria-hidden="true" /></button>
+        <div style={{ flex: 1, minWidth: 0 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{localTitle || 'Edit song'}</p><p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{lines.length} lines · click a row to edit</p></div>
+        <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ flexShrink: 0 }}>{saving ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Saving…</> : 'Save'}</button>
       </div>
-
       <div className="editor-list">
-        {/* Title and artist editing */}
         <div className="card" style={{ marginBottom: 8 }}>
           <span className="card-label">Song details</span>
-          <div className="field">
-            <input value={localTitle}  onChange={e => setLocalTitle(e.target.value)}  placeholder="Song title"  />
-          </div>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <input value={localArtist} onChange={e => setLocalArtist(e.target.value)} placeholder="Artist name" />
-          </div>
+          <div className="field"><input value={localTitle} onChange={e => setLocalTitle(e.target.value)} placeholder="Song title" /></div>
+          <div className="field" style={{ marginBottom: 0 }}><input value={localArtist} onChange={e => setLocalArtist(e.target.value)} placeholder="Artist name" /></div>
         </div>
-
-        {/* Lyric lines */}
         {lines.map((line, idx) => {
           const isActive = activeIdx === idx;
-          const dotColor = line.color || '#F4A827';
-
           if (isActive) return (
             <div key={line.id} className="editor-row-active">
               <div className="editor-row-top">
-                <input className="editor-ts-input" defaultValue={fmt(line.time)}
-                  onBlur={e => updateLine(idx, 'time', parseTime(e.target.value))}
-                  onClick={e => e.stopPropagation()} aria-label="Timestamp (m:ss)" />
-                <input className="editor-text-input" type="text" value={line.text}
-                  onChange={e => updateLine(idx, 'text', e.target.value)} autoFocus
-                  placeholder="Lyric text…" onClick={e => e.stopPropagation()} />
-                <button className="btn btn-ghost editor-del-btn" onClick={e => deleteLine(idx, e)} aria-label="Delete line">
-                  <i className="ti ti-trash" aria-hidden="true" />
-                </button>
+                <input className="editor-ts-input" defaultValue={fmt(line.time)} onBlur={e => updateLine(idx, 'time', parseTime(e.target.value))} onClick={e => e.stopPropagation()} aria-label="Timestamp" />
+                <input className="editor-text-input" type="text" value={line.text} onChange={e => updateLine(idx, 'text', e.target.value)} autoFocus placeholder="Lyric text…" onClick={e => e.stopPropagation()} />
+                <button className="btn btn-ghost editor-del-btn" onClick={e => deleteLine(idx, e)} aria-label="Delete line"><i className="ti ti-trash" aria-hidden="true" /></button>
               </div>
               <div className="editor-swatches">
-                {EDITOR_COLORS.map(c => {
-                  const isSel = line.color === c.hex || (line.color === null && c.hex === '#F4A827');
-                  return (
-                    <div key={c.hex} className={`editor-swatch${isSel ? ' editor-swatch--sel' : ''}`}
-                      style={{ background: c.hex, '--sw': c.hex }} title={c.name}
-                      onClick={e => { e.stopPropagation(); updateLine(idx, 'color', line.color === c.hex ? null : c.hex); }}
-                    />
-                  );
-                })}
-                <span className="editor-color-name">
-                  {line.color ? (EDITOR_COLORS.find(c => c.hex === line.color)?.name || '') : 'Amber (default)'}
-                </span>
+                {EDITOR_COLORS.map(c => { const isSel = line.color === c.hex || (line.color === null && c.hex === '#F4A827'); return (<div key={c.hex} className={`editor-swatch${isSel ? ' editor-swatch--sel' : ''}`} style={{ background: c.hex, '--sw': c.hex }} title={c.name} onClick={e => { e.stopPropagation(); updateLine(idx, 'color', line.color === c.hex ? null : c.hex); }} />); })}
+                <span className="editor-color-name">{line.color ? (EDITOR_COLORS.find(c => c.hex === line.color)?.name || '') : 'Amber (default)'}</span>
               </div>
             </div>
           );
-
           return (
             <div key={line.id} className="editor-row" onClick={() => setActiveIdx(idx)}>
               <span className="editor-ts">{fmt(line.time)}</span>
-              <div className="editor-dot" style={{ background: dotColor }} />
-              <span className="editor-text" style={{ color: line.color || 'var(--text)' }}>
-                {line.text || <em style={{ color: 'var(--muted)' }}>empty</em>}
-              </span>
-              <button className="btn btn-ghost editor-del-btn" onClick={e => deleteLine(idx, e)} aria-label="Delete line">
-                <i className="ti ti-trash" aria-hidden="true" />
-              </button>
+              <div className="editor-dot" style={{ background: line.color || '#F4A827' }} />
+              <span className="editor-text" style={{ color: line.color || 'var(--text)' }}>{line.text || <em style={{ color: 'var(--muted)' }}>empty</em>}</span>
+              <button className="btn btn-ghost editor-del-btn" onClick={e => deleteLine(idx, e)} aria-label="Delete line"><i className="ti ti-trash" aria-hidden="true" /></button>
             </div>
           );
         })}
-
-        <button className="btn btn-secondary" onClick={addLine} style={{ marginTop: 10, alignSelf: 'flex-start' }}>
-          <i className="ti ti-plus" aria-hidden="true" /> Add line
-        </button>
+        <button className="btn btn-secondary" onClick={addLine} style={{ marginTop: 10, alignSelf: 'flex-start' }}><i className="ti ti-plus" aria-hidden="true" /> Add line</button>
       </div>
     </div>
   );
@@ -386,279 +288,101 @@ function EditorScreen({ song, onSave, onBack }) {
 
 // ── ADD SONG SCREEN ───────────────────────────────────────────────────────────
 function AddSongScreen({ onSave }) {
-  const [title, setTitle]             = useState('');
-  const [artist, setArtist]           = useState('');
-  const [origFile, setOrigFile]       = useState(null);
-  const [instrFile, setInstrFile]     = useState(null);
-  const [lyricsText, setLyricsText]   = useState('');
-  const [mode, setMode]               = useState('auto');
-  const [stage, setStage]             = useState('idle');
+  const [title, setTitle]         = useState('');
+  const [artist, setArtist]       = useState('');
+  const [origFile, setOrigFile]   = useState(null);
+  const [instrFile, setInstrFile] = useState(null);
+  const [lyricsText, setLyricsText] = useState('');
+  const [mode, setMode]           = useState('auto');
+  const [stage, setStage]         = useState('idle');
   const [demucsState, setDemucsState] = useState({ status: 'waiting', elapsed: 0 });
   const [whisperState, setWhisperState] = useState({ status: 'waiting', elapsed: 0 });
-  const [result, setResult]           = useState(null);
-  const [errorMsg, setErrorMsg]       = useState('');
+  const [result, setResult]       = useState(null);
+  const [errorMsg, setErrorMsg]   = useState('');
   const cancelRef = useRef({ aborted: false });
-  const timers    = useRef({});
+  const timers = useRef({});
 
-  function startTick(key, setter) {
-    let n = 0;
-    timers.current[key] = setInterval(() => { n++; setter(p => ({ ...p, elapsed: n })); }, 1000);
-  }
-  function stopTick(key) { clearInterval(timers.current[key]); delete timers.current[key]; }
+  function startTick(k, s) { let n = 0; timers.current[k] = setInterval(() => { n++; s(p => ({ ...p, elapsed: n })); }, 1000); }
+  function stopTick(k) { clearInterval(timers.current[k]); delete timers.current[k]; }
   useEffect(() => () => { cancelRef.current.aborted = true; Object.values(timers.current).forEach(clearInterval); }, []);
 
   async function handleProcess() {
     if (!origFile || !title.trim()) return;
     cancelRef.current = { aborted: false };
-    setDemucsState({ status: 'waiting', elapsed: 0 });
-    setWhisperState({ status: 'waiting', elapsed: 0 });
+    setDemucsState({ status: 'waiting', elapsed: 0 }); setWhisperState({ status: 'waiting', elapsed: 0 });
     setResult(null); setErrorMsg('');
-    let originalSupabaseUrl = null;
-
+    let originalUrl = null;
     try {
       setStage('uploading');
-      originalSupabaseUrl = await uploadAudioToSupabase(origFile);
+      originalUrl = await uploadAudioToSupabase(origFile);
       if (cancelRef.current.aborted) return;
-
-      const lrcResult   = title.trim() ? await lrcSearch(artist, title) : null;
+      const lrcResult = title.trim() ? await lrcSearch(artist, title) : null;
       const skipWhisper = lrcResult?.synced?.length > 0;
-
       setStage('processing');
-      setDemucsState(p => ({ ...p, status: 'running' }));
-      setWhisperState(p => ({ ...p, status: skipWhisper ? 'skipped_lrc' : 'running' }));
-      startTick('demucs', setDemucsState);
-      if (!skipWhisper) startTick('whisper', setWhisperState);
-
-      const demucsId = await repCreate(DEMUCS_VERSION, {
-        audio: originalSupabaseUrl, model_name: 'htdemucs', stem: 'vocals',
-        shifts: 1, overlap: 0.25, output_format: 'mp3',
-      });
+      setDemucsState(p => ({ ...p, status: 'running' })); setWhisperState(p => ({ ...p, status: skipWhisper ? 'skipped_lrc' : 'running' }));
+      startTick('demucs', setDemucsState); if (!skipWhisper) startTick('whisper', setWhisperState);
+      const demucsId = await repCreate(DEMUCS_VERSION, { audio: originalUrl, model_name: 'htdemucs', stem: 'vocals', shifts: 1, overlap: 0.25, output_format: 'mp3' });
       await sleep(12000);
-      const whisperPredId = skipWhisper ? null : await repCreate(WHISPER_VERSION, {
-        audio: originalSupabaseUrl, word_timestamps: true, temperature: 0,
-      });
+      const whisperPredId = skipWhisper ? null : await repCreate(WHISPER_VERSION, { audio: originalUrl, word_timestamps: true, temperature: 0 });
       if (cancelRef.current.aborted) return;
-
-      let instrumentalUrl = null, vocalsUrl = null, lyrics = [], lyricsType = 'none';
-      let demucsErr = null, whisperErr = null;
-
+      let instrumentalUrl = null, vocalsUrl = null, lyrics = [], lyricsType = 'none', demucsErr = null, whisperErr = null;
       await Promise.allSettled([
-        repPoll(demucsId, (st, el) => {
-          if (!cancelRef.current.aborted)
-            setDemucsState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el });
-        }, cancelRef.current).then(async out => {
+        repPoll(demucsId, (st, el) => { if (!cancelRef.current.aborted) setDemucsState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); }, cancelRef.current).then(async out => {
           stopTick('demucs'); setDemucsState(p => ({ ...p, status: 'done' }));
-          const instrRaw  = getInstrumental(out);
-          const vocalsRaw = getVocals(out);
-          if (instrRaw)  instrumentalUrl = await uploadProcessedToSupabase(instrRaw,  'instrumentals');
-          if (vocalsRaw) vocalsUrl       = await uploadProcessedToSupabase(vocalsRaw, 'vocals');
-          if (originalSupabaseUrl) await deleteSupabaseFile(originalSupabaseUrl);
+          const ir = getInstrumental(out); const vr = getVocals(out);
+          if (ir) instrumentalUrl = await uploadProcessedToSupabase(ir, 'instrumentals');
+          if (vr) vocalsUrl = await uploadProcessedToSupabase(vr, 'vocals');
+          if (originalUrl) await deleteSupabaseFile(originalUrl);
         }).catch(e => { stopTick('demucs'); demucsErr = e.message; setDemucsState(p => ({ ...p, status: 'error' })); }),
-
         whisperPredId
-          ? repPoll(whisperPredId, (st, el) => {
-              if (!cancelRef.current.aborted)
-                setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el });
-            }, cancelRef.current).then(out => {
-              stopTick('whisper'); setWhisperState(p => ({ ...p, status: 'done' }));
-              lyrics = whisperToLines(out); lyricsType = 'synced';
-            }).catch(e => { stopTick('whisper'); whisperErr = e.message; setWhisperState(p => ({ ...p, status: 'error' })); })
-          : Promise.resolve().then(() => {
-              lyrics = lrcResult.synced.length > 0 ? lrcResult.synced
-                : lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] }));
-              lyricsType = lrcResult.synced.length > 0 ? 'synced' : 'plain';
-            }),
+          ? repPoll(whisperPredId, (st, el) => { if (!cancelRef.current.aborted) setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); }, cancelRef.current).then(out => { stopTick('whisper'); setWhisperState(p => ({ ...p, status: 'done' })); lyrics = whisperToLines(out); lyricsType = 'synced'; }).catch(e => { stopTick('whisper'); whisperErr = e.message; setWhisperState(p => ({ ...p, status: 'error' })); })
+          : Promise.resolve().then(() => { lyrics = lrcResult.synced.length > 0 ? lrcResult.synced : lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] })); lyricsType = lrcResult.synced.length > 0 ? 'synced' : 'plain'; }),
       ]);
-
       if (cancelRef.current.aborted) return;
-      setResult({ instrumentalUrl, vocalsUrl, lyrics, lyricsType, demucsErr, whisperErr, skippedWhisper: skipWhisper });
-      setStage('review');
-    } catch (e) {
-      Object.values(timers.current).forEach(clearInterval);
-      setErrorMsg(e.message); setStage('error');
-    }
+      setResult({ instrumentalUrl, vocalsUrl, lyrics, lyricsType, demucsErr, whisperErr, skippedWhisper: skipWhisper }); setStage('review');
+    } catch (e) { Object.values(timers.current).forEach(clearInterval); setErrorMsg(e.message); setStage('error'); }
   }
 
   function handleSave() {
     const r = result || {};
-    const textLines = lyricsText.trim()
-      ? parseLRC(lyricsText).length > 0 ? parseLRC(lyricsText)
-        : lyricsText.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3.5, text: t, color: null, words: [] }))
-      : [];
+    const textLines = lyricsText.trim() ? parseLRC(lyricsText).length > 0 ? parseLRC(lyricsText) : lyricsText.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3.5, text: t, color: null, words: [] })) : [];
     const finalLyrics = r.lyrics?.length > 0 ? r.lyrics : textLines;
-    onSave({
-      id: uid(), title: title.trim(), artist: artist.trim(),
-      audioUrl: r.instrumentalUrl || (instrFile ? URL.createObjectURL(instrFile) : null),
-      vocalsUrl: r.vocalsUrl || null,
-      hasAudio: !!(r.instrumentalUrl || instrFile),
-      lyrics: finalLyrics,
-      lyricsType: r.lyrics?.length > 0 ? r.lyricsType : finalLyrics.length > 0 ? 'plain' : 'none',
-      plainLyrics: lyricsText,
-    });
+    onSave({ id: uid(), title: title.trim(), artist: artist.trim(), audioUrl: r.instrumentalUrl || (instrFile ? URL.createObjectURL(instrFile) : null), vocalsUrl: r.vocalsUrl || null, hasAudio: !!(r.instrumentalUrl || instrFile), lyrics: finalLyrics, lyricsType: r.lyrics?.length > 0 ? r.lyricsType : finalLyrics.length > 0 ? 'plain' : 'none', plainLyrics: lyricsText });
   }
 
-  if (stage === 'uploading') return (
-    <div className="screen" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, textAlign: 'center', padding: '0 32px' }}>
-      <i className="ti ti-cloud-upload spin" style={{ fontSize: 40, color: 'var(--muted)' }} aria-hidden="true" />
-      <p style={{ fontWeight: 700, fontSize: 16 }}>Uploading "{title}"…</p>
-      <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>Saving to Supabase, then sending to Replicate.</p>
-    </div>
-  );
+  if (stage === 'uploading') return (<div className="screen" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, textAlign: 'center', padding: '0 32px' }}><i className="ti ti-cloud-upload spin" style={{ fontSize: 40, color: 'var(--muted)' }} aria-hidden="true" /><p style={{ fontWeight: 700, fontSize: 16 }}>Uploading "{title}"…</p><p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>Saving to Supabase, then sending to Replicate.</p></div>);
 
   if (stage === 'processing') {
     const steps = [
-      { key: 'demucs',  icon: 'ti-scissors',        label: 'Separating vocals',  sub: 'Demucs — saves instrumental + vocal stem', ...demucsState },
-      { key: 'whisper', icon: 'ti-text-recognition', label: whisperState.status === 'skipped_lrc' ? 'Lyrics from LRClib' : 'Transcribing lyrics',
-        sub: whisperState.status === 'skipped_lrc' ? 'Synced lyrics found — Whisper skipped ✓' : 'Whisper — word-level timestamps', ...whisperState },
+      { key: 'demucs', icon: 'ti-scissors', label: 'Separating vocals', sub: 'Demucs — saves instrumental + vocal stem', ...demucsState },
+      { key: 'whisper', icon: 'ti-text-recognition', label: whisperState.status === 'skipped_lrc' ? 'Lyrics from LRClib' : 'Transcribing lyrics', sub: whisperState.status === 'skipped_lrc' ? 'Synced lyrics found — Whisper skipped ✓' : 'Whisper — word-level timestamps', ...whisperState },
     ];
-    return (
-      <div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <p style={{ fontWeight: 700, fontSize: 17, marginBottom: 2 }}>Processing "{title}"…</p>
-        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Both steps run in parallel. Usually 2–5 minutes.</p>
-        {steps.map(step => (
-          <div key={step.key} className="step-row">
-            <i className={`ti ${step.icon}${step.status === 'running' ? ' spin' : ''}`}
-              style={{ color: step.status === 'done' || step.status === 'skipped_lrc' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }}
-              aria-hidden="true" />
-            <div className="step-info"><div className="step-title">{step.label}</div><div className="step-sub">{step.sub}</div></div>
-            <div className="step-status" style={{ color: step.status === 'done' || step.status === 'skipped_lrc' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }}>
-              {step.status === 'done' || step.status === 'skipped_lrc' ? '✓ Done' : step.status === 'error' ? 'Failed' : step.status === 'running' ? fmt(step.elapsed) : '…'}
-            </div>
-          </div>
-        ))}
-        <button className="btn btn-secondary" onClick={() => { cancelRef.current.aborted = true; setStage('idle'); }}>
-          <i className="ti ti-x" aria-hidden="true" /> Cancel
-        </button>
-      </div>
-    );
+    return (<div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}><p style={{ fontWeight: 700, fontSize: 17, marginBottom: 2 }}>Processing "{title}"…</p><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Both steps run in parallel. Usually 2–5 minutes.</p>{steps.map(step => (<div key={step.key} className="step-row"><i className={`ti ${step.icon}${step.status === 'running' ? ' spin' : ''}`} style={{ color: step.status === 'done' || step.status === 'skipped_lrc' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }} aria-hidden="true" /><div className="step-info"><div className="step-title">{step.label}</div><div className="step-sub">{step.sub}</div></div><div className="step-status" style={{ color: step.status === 'done' || step.status === 'skipped_lrc' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }}>{step.status === 'done' || step.status === 'skipped_lrc' ? '✓ Done' : step.status === 'error' ? 'Failed' : step.status === 'running' ? fmt(step.elapsed) : '…'}</div></div>))}<button className="btn btn-secondary" onClick={() => { cancelRef.current.aborted = true; setStage('idle'); }}><i className="ti ti-x" aria-hidden="true" /> Cancel</button></div>);
   }
 
   if (stage === 'review' && result) return (
     <div className="screen" style={{ padding: '16px 18px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
       <p style={{ fontWeight: 700, fontSize: 17, margin: '6px 0 0' }}>Review & save</p>
       <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <i className={`ti ${result.instrumentalUrl ? 'ti-check' : 'ti-alert-triangle'}`}
-            style={{ fontSize: 20, color: result.instrumentalUrl ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" />
-          <div>
-            <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.instrumentalUrl ? 'Karaoke track saved' : 'Vocal separation failed'}</p>
-            {result.vocalsUrl && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>Vocal stem saved — guide vocals available</p>}
-            {result.demucsErr && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>{result.demucsErr}</p>}
-          </div>
-        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className={`ti ${result.instrumentalUrl ? 'ti-check' : 'ti-alert-triangle'}`} style={{ fontSize: 20, color: result.instrumentalUrl ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" /><div><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.instrumentalUrl ? 'Karaoke track saved' : 'Vocal separation failed'}</p>{result.vocalsUrl && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>Vocal stem saved — guide vocals available</p>}{result.demucsErr && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>{result.demucsErr}</p>}</div></div>
         <div className="divider" style={{ margin: 0 }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <i className={`ti ${result.lyrics.length > 0 ? 'ti-check' : 'ti-alert-triangle'}`}
-            style={{ fontSize: 20, color: result.lyrics.length > 0 ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" />
-          <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>
-            {result.lyrics.length > 0
-              ? `${result.lyrics.length} lines${result.skippedWhisper ? ' (LRClib)' : ' (Whisper + word timing)'}`
-              : 'No lyrics extracted'}
-          </p>
-        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className={`ti ${result.lyrics.length > 0 ? 'ti-check' : 'ti-alert-triangle'}`} style={{ fontSize: 20, color: result.lyrics.length > 0 ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" /><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.lyrics.length > 0 ? `${result.lyrics.length} lines${result.skippedWhisper ? ' (LRClib)' : ' (Whisper + word timing)'}` : 'No lyrics extracted'}</p></div>
       </div>
-      {result.lyrics.length > 0 && (
-        <div className="card" style={{ padding: '12px 14px' }}>
-          <span className="card-label">Lyrics preview</span>
-          <div style={{ maxHeight: 170, overflowY: 'auto' }}>
-            {result.lyrics.slice(0, 10).map((l, i) => (
-              <div key={i} style={{ display: 'flex', gap: 10, borderBottom: '1px solid var(--border)', padding: '3px 0', fontSize: 13 }}>
-                <span style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>{fmt(l.time)}</span>
-                <span>{l.text}</span>
-              </div>
-            ))}
-            {result.lyrics.length > 10 && <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>…and {result.lyrics.length - 10} more lines</p>}
-          </div>
-        </div>
-      )}
-      {!result.lyrics.length && (
-        <div className="card">
-          <span className="card-label">Paste lyrics manually</span>
-          <textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder="Paste lyrics here…" rows={6} />
-        </div>
-      )}
+      {result.lyrics.length > 0 && (<div className="card" style={{ padding: '12px 14px' }}><span className="card-label">Lyrics preview</span><div style={{ maxHeight: 170, overflowY: 'auto' }}>{result.lyrics.slice(0, 10).map((l, i) => (<div key={i} style={{ display: 'flex', gap: 10, borderBottom: '1px solid var(--border)', padding: '3px 0', fontSize: 13 }}><span style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>{fmt(l.time)}</span><span>{l.text}</span></div>))}{result.lyrics.length > 10 && <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>…and {result.lyrics.length - 10} more lines</p>}</div></div>)}
+      {!result.lyrics.length && (<div className="card"><span className="card-label">Paste lyrics manually</span><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder="Paste lyrics here…" rows={6} /></div>)}
       <p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> Use ✏️ on any song in the library to correct lyrics after saving</p>
-      <button className="btn btn-process btn-full" onClick={handleSave}>
-        <i className="ti ti-device-floppy" aria-hidden="true" /> Save "{title}" to library
-      </button>
+      <button className="btn btn-process btn-full" onClick={handleSave}><i className="ti ti-device-floppy" aria-hidden="true" /> Save "{title}" to library</button>
     </div>
   );
 
-  if (stage === 'error') return (
-    <div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div className="warn-box">
-        <p style={{ fontWeight: 700, marginBottom: 6 }}><i className="ti ti-alert-triangle" aria-hidden="true" /> Processing failed</p>
-        <p style={{ margin: 0, wordBreak: 'break-word' }}>{errorMsg}</p>
-        <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8, lineHeight: 1.6 }}>Check REPLICATE_API_TOKEN in Vercel env vars and that your account has credits.</p>
-      </div>
-      <button className="btn btn-secondary btn-full" onClick={() => { setStage('idle'); setErrorMsg(''); }}>
-        <i className="ti ti-refresh" aria-hidden="true" /> Try again
-      </button>
-    </div>
-  );
+  if (stage === 'error') return (<div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}><div className="warn-box"><p style={{ fontWeight: 700, marginBottom: 6 }}><i className="ti ti-alert-triangle" aria-hidden="true" /> Processing failed</p><p style={{ margin: 0, wordBreak: 'break-word' }}>{errorMsg}</p><p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8, lineHeight: 1.6 }}>Check REPLICATE_API_TOKEN in Vercel env vars and that your account has credits.</p></div><button className="btn btn-secondary btn-full" onClick={() => { setStage('idle'); setErrorMsg(''); }}><i className="ti ti-refresh" aria-hidden="true" /> Try again</button></div>);
 
   return (
     <div className="screen" style={{ padding: '8px 18px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div className="mode-tabs">
-        {['auto', 'manual'].map(m => (
-          <button key={m} className={`mode-tab${mode === m ? ' active' : ''}`} onClick={() => setMode(m)}>
-            <i className={`ti ${m === 'auto' ? 'ti-sparkles' : 'ti-upload'}`} aria-hidden="true" style={{ marginRight: 5, fontSize: 13 }} />
-            {m === 'auto' ? 'Auto · Replicate' : 'Manual'}
-          </button>
-        ))}
-      </div>
-      <div className="card">
-        <span className="card-label">Song details</span>
-        <div className="field"><input placeholder="Song title *" value={title} onChange={e => setTitle(e.target.value)} /></div>
-        <div className="field"><input placeholder="Artist name" value={artist} onChange={e => setArtist(e.target.value)} /></div>
-      </div>
-      {mode === 'auto' && (
-        <>
-          <div className="card">
-            <span className="card-label">Upload original song</span>
-            <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>
-              Demucs separates vocal stem + instrumental (both saved permanently). Whisper transcribes with word timing. Original is deleted after processing.
-            </p>
-            <label className={`upload-zone${origFile ? ' has-file' : ''}`}>
-              <input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} />
-              <i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />
-              {origFile ? <p className="filename">{origFile.name}</p>
-                : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}
-            </label>
-          </div>
-          <div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib is checked first — if synced lyrics are found, Whisper is skipped to save credits.</div>
-          <button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}>
-            <i className="ti ti-sparkles" aria-hidden="true" /> Process with Replicate
-          </button>
-        </>
-      )}
-      {mode === 'manual' && (
-        <>
-          <div className="card">
-            <span className="card-label">Lyrics</span>
-            <button className="btn btn-secondary btn-full" style={{ marginBottom: 12 }} onClick={async () => {
-              if (!title.trim()) return;
-              const res = await lrcSearch(artist, title);
-              if (res?.plain) setLyricsText(res.plain);
-              else alert('Not found on LRClib. Paste manually or use Auto mode.');
-            }}><i className="ti ti-search" aria-hidden="true" /> Search LRClib</button>
-            <textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)}
-              placeholder={"Paste lyrics here…\n\nOr use LRC timed format:\n[00:12.34]First line"} rows={7} />
-          </div>
-          <div className="card">
-            <span className="card-label">Instrumental track</span>
-            <label className={`upload-zone${instrFile ? ' has-file' : ''}`}>
-              <input type="file" accept="audio/*" onChange={e => setInstrFile(e.target.files[0])} />
-              <i className={`ti ${instrFile ? 'ti-check' : 'ti-music'}`} style={{ color: instrFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />
-              {instrFile ? <p className="filename">{instrFile.name}</p>
-                : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Upload karaoke / instrumental</p><p>MP3, WAV, M4A</p></>}
-            </label>
-          </div>
-          <button className="btn btn-primary btn-full" onClick={handleSave} disabled={!title.trim()}>
-            <i className="ti ti-plus" aria-hidden="true" /> Add to library
-          </button>
-        </>
-      )}
+      <div className="mode-tabs">{['auto', 'manual'].map(m => (<button key={m} className={`mode-tab${mode === m ? ' active' : ''}`} onClick={() => setMode(m)}><i className={`ti ${m === 'auto' ? 'ti-sparkles' : 'ti-upload'}`} aria-hidden="true" style={{ marginRight: 5, fontSize: 13 }} />{m === 'auto' ? 'Auto · Replicate' : 'Manual'}</button>))}</div>
+      <div className="card"><span className="card-label">Song details</span><div className="field"><input placeholder="Song title *" value={title} onChange={e => setTitle(e.target.value)} /></div><div className="field"><input placeholder="Artist name" value={artist} onChange={e => setArtist(e.target.value)} /></div></div>
+      {mode === 'auto' && (<><div className="card"><span className="card-label">Upload original song</span><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Demucs separates vocal stem + instrumental (both saved permanently). Whisper transcribes with word timing. Original deleted after.</p><label className={`upload-zone${origFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} /><i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}</label></div><div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first — if synced lyrics found, Whisper is skipped.</div><button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}><i className="ti ti-sparkles" aria-hidden="true" /> Process with Replicate</button></>)}
+      {mode === 'manual' && (<><div className="card"><span className="card-label">Lyrics</span><button className="btn btn-secondary btn-full" style={{ marginBottom: 12 }} onClick={async () => { if (!title.trim()) return; const res = await lrcSearch(artist, title); if (res?.plain) setLyricsText(res.plain); else alert('Not found on LRClib. Paste manually or use Auto mode.'); }}><i className="ti ti-search" aria-hidden="true" /> Search LRClib</button><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder={"Paste lyrics here…\n\nOr LRC format:\n[00:12.34]First line"} rows={7} /></div><div className="card"><span className="card-label">Instrumental track</span><label className={`upload-zone${instrFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setInstrFile(e.target.files[0])} /><i className={`ti ${instrFile ? 'ti-check' : 'ti-music'}`} style={{ color: instrFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{instrFile ? <p className="filename">{instrFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Upload karaoke / instrumental</p><p>MP3, WAV, M4A</p></>}</label></div><button className="btn btn-primary btn-full" onClick={handleSave} disabled={!title.trim()}><i className="ti ti-plus" aria-hidden="true" /> Add to library</button></>)}
     </div>
   );
 }
@@ -666,13 +390,13 @@ function AddSongScreen({ onSave }) {
 
 // ── PLAYER SCREEN ─────────────────────────────────────────────────────────────
 function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack, onSongEnd, onStartRandom, onStopRandom, onSkipRandom, onGoToPrevious }) {
-  const audioRef  = useRef(null);
-  const guideRef  = useRef(null);
-  const rafRef    = useRef(null);
-  const lpRafRef  = useRef(null);
-  const lpDone    = useRef(false);
-  // Stable ref for keyboard handler — avoids re-attaching on every state change
-  const stateRef  = useRef({});
+  const audioRef   = useRef(null);
+  const guideRef   = useRef(null);
+  const rafRef     = useRef(null);
+  const lpRafRef   = useRef(null);
+  const lpTimerRef = useRef(null);
+  const lpDone     = useRef(false);
+  const stateRef   = useRef({});
 
   const [playing, setPlaying]             = useState(false);
   const [currentTime, setCurrentTime]     = useState(0);
@@ -683,25 +407,24 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   const [pressProgress, setPressProgress] = useState(0);
   const [longPressing, setLongPressing]   = useState(false);
 
-  // Keep stateRef current on every render — keyboard handler reads from here
+  // Responsive — true on desktop (≥768px), triggers cinematic layout
+  const [isCinematic, setIsCinematic] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
+  useEffect(() => {
+    const check = () => setIsCinematic(window.innerWidth >= 768);
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
   stateRef.current = { playing, currentTime, duration, randomMode, guideVolume };
 
   // ── Reset on song change ───────────────────────────────────────────────────
   useEffect(() => {
-    setPlaying(false);
-    setCurrentTime(0);
-    setDuration(0);
-    setActiveLine(-1);
-    setGuideExpanded(false);
-    setGuideVolume(settings?.defaultGuideVolume ?? 0);
-    setPressProgress(0);
-    setLongPressing(false);
-    lpDone.current = false;
-
-    // Autoplay whenever a queued song arrives (random mode, auto-play setting, future queue)
+    setPlaying(false); setCurrentTime(0); setDuration(0); setActiveLine(-1);
+    setGuideExpanded(false); setGuideVolume(settings?.defaultGuideVolume ?? 0);
+    setPressProgress(0); setLongPressing(false); lpDone.current = false;
     if (autoPlay) {
-      const timer = setTimeout(() => setPlaying(true), 150);
-      return () => clearTimeout(timer);
+      const t = setTimeout(() => setPlaying(true), 150);
+      return () => clearTimeout(t);
     }
   }, [song.id]);
 
@@ -710,37 +433,23 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     const a = audioRef.current; if (!a) return;
     const onMeta = () => setDuration(a.duration);
     const onEnd  = () => { setPlaying(false); setActiveLine(-1); onSongEnd?.(); };
-    a.addEventListener('loadedmetadata', onMeta);
-    a.addEventListener('ended', onEnd);
+    a.addEventListener('loadedmetadata', onMeta); a.addEventListener('ended', onEnd);
     return () => { a.removeEventListener('loadedmetadata', onMeta); a.removeEventListener('ended', onEnd); };
   }, [song.id]);
 
   // ── Play / pause ───────────────────────────────────────────────────────────
   useEffect(() => {
-    const main  = audioRef.current;
-    const guide = guideRef.current;
-    if (!main) return;
+    const main = audioRef.current; const guide = guideRef.current; if (!main) return;
     if (playing) {
-      main.play().catch(() => setPlaying(false));
+      main.play().catch(err => { console.warn('Playback failed:', err.message); if (song.audioUrl?.startsWith('blob:')) console.warn('Expired blob URL — re-add this song to get a permanent URL'); setPlaying(false); });
       if (guide && guideVolume > 0) { guide.currentTime = main.currentTime; guide.play().catch(() => {}); }
-      const tick = () => {
-        const t = main.currentTime;
-        setCurrentTime(t);
-        if (song.lyrics?.length > 0) {
-          let idx = -1;
-          for (let i = 0; i < song.lyrics.length; i++) { if (song.lyrics[i].time <= t) idx = i; else break; }
-          setActiveLine(idx);
-        }
-        rafRef.current = requestAnimationFrame(tick);
-      };
+      const tick = () => { const t = main.currentTime; setCurrentTime(t); if (song.lyrics?.length > 0) { let idx = -1; for (let i = 0; i < song.lyrics.length; i++) { if (song.lyrics[i].time <= t) idx = i; else break; } setActiveLine(idx); } rafRef.current = requestAnimationFrame(tick); };
       rafRef.current = requestAnimationFrame(tick);
-    } else {
-      main.pause(); guide?.pause(); cancelAnimationFrame(rafRef.current);
-    }
+    } else { main.pause(); guide?.pause(); cancelAnimationFrame(rafRef.current); }
     return () => cancelAnimationFrame(rafRef.current);
   }, [playing]);
 
-  // ── Guide volume changes ───────────────────────────────────────────────────
+  // ── Guide volume ───────────────────────────────────────────────────────────
   useEffect(() => {
     const guide = guideRef.current; if (!guide) return;
     guide.volume = guideVolume;
@@ -748,18 +457,11 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     else if (guideVolume === 0) guide.pause();
   }, [guideVolume]);
 
-  // ── Long-press animation ───────────────────────────────────────────────────
+  // ── Long-press animation (visual only) ────────────────────────────────────
   useEffect(() => {
     if (!longPressing) { setPressProgress(0); return; }
     const start = Date.now();
-    const frame = () => {
-      const p = Math.min(1, (Date.now() - start) / 650);
-      setPressProgress(p);
-      if (p < 1) { lpRafRef.current = requestAnimationFrame(frame); return; }
-      lpDone.current = true;
-      setLongPressing(false);
-      if (!stateRef.current.randomMode) onStartRandom?.();
-    };
+    const frame = () => { const p = Math.min(1, (Date.now() - start) / 650); setPressProgress(p); if (p < 1) lpRafRef.current = requestAnimationFrame(frame); };
     lpRafRef.current = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(lpRafRef.current);
   }, [longPressing]);
@@ -769,258 +471,155 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     function onKey(e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
       const { playing, currentTime, duration, randomMode, guideVolume } = stateRef.current;
-
       switch (e.key) {
-        case ' ':
-          e.preventDefault();
-          setPlaying(p => !p);
-          break;
-
-        case 'Escape':
-          e.preventDefault();
-          onBack?.();
-          break;
-
-        case 'ArrowRight':
-          e.preventDefault();
-          if (randomMode) { onSkipRandom?.(); }
-          else if (audioRef.current) {
-            const t = Math.min(duration, currentTime + 10);
-            audioRef.current.currentTime = t;
-            if (guideRef.current) guideRef.current.currentTime = t;
-            setCurrentTime(t);
-          }
-          break;
-
-        case 'ArrowLeft':
-          e.preventDefault();
-          if (currentTime <= 2) {
-            // Within first 2 seconds — go to previous song
-            onGoToPrevious?.();
-          } else {
-            // Restart current song
-            if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); }
-            if (guideRef.current) guideRef.current.currentTime = 0;
-          }
-          break;
-
-        case 'm': case 'M':
-          // Toggle guide vocals mute
-          setGuideVolume(v => v > 0 ? 0 : 0.3);
-          break;
-
-        case 'r': case 'R':
-          // Toggle random mode
-          if (randomMode) onStopRandom?.(); else onStartRandom?.();
-          break;
-
-        case 'f': case 'F':
-          // Fullscreen toggle
-          if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen?.().catch?.(() => {});
-          } else {
-            document.exitFullscreen?.().catch?.(() => {});
-          }
-          break;
+        case ' ': e.preventDefault(); setPlaying(p => !p); break;
+        case 'Escape': e.preventDefault(); onBack?.(); break;
+        case 'ArrowRight': e.preventDefault(); if (randomMode) { onSkipRandom?.(); } else if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); } break;
+        case 'ArrowLeft': e.preventDefault(); if (currentTime <= 2) { onGoToPrevious?.(); } else { if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); } if (guideRef.current) guideRef.current.currentTime = 0; } break;
+        case 'm': case 'M': setGuideVolume(v => v > 0 ? 0 : 0.3); break;
+        case 'r': case 'R': if (randomMode) onStopRandom?.(); else onStartRandom?.(); break;
+        case 'f': case 'F': if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch?.(() => {}); else document.exitFullscreen?.().catch?.(() => {}); break;
       }
     }
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, []); // empty deps — reads current values via stateRef
+  }, []);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
-  function seek(e) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const t    = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * (duration || 0);
-    if (audioRef.current) audioRef.current.currentTime = t;
-    if (guideRef.current) guideRef.current.currentTime = t;
-    setCurrentTime(t);
-  }
+  function seek(e) { const r = e.currentTarget.getBoundingClientRect(); const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (duration || 0); if (audioRef.current) audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); }
+  function handleRestart() { if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); } if (guideRef.current) guideRef.current.currentTime = 0; }
+  function handleSkip() { if (randomMode) { onSkipRandom?.(); return; } if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); } }
 
-  function handlePointerDown() {
-    // No preventDefault — that was breaking short press on some browsers
-    lpDone.current = false;
-    setLongPressing(true);
-  }
+  // Play button — onClick for reliable short press, setTimeout for long press
+  function handlePlayClick() { if (lpDone.current) { lpDone.current = false; return; } setPlaying(p => !p); }
+  function handlePlayPointerDown() { lpDone.current = false; setLongPressing(true); clearTimeout(lpTimerRef.current); lpTimerRef.current = setTimeout(() => { lpDone.current = true; setLongPressing(false); if (!stateRef.current.randomMode) onStartRandom?.(); }, 650); }
+  function handlePlayPointerUp() { clearTimeout(lpTimerRef.current); setLongPressing(false); }
+  function handlePlayPointerLeave() { clearTimeout(lpTimerRef.current); setLongPressing(false); }
 
-  function handlePointerUp() {
-    setLongPressing(false);
-    if (lpDone.current) { lpDone.current = false; return; } // long press already handled
-    setPlaying(p => !p); // short press = play/pause
-  }
-
-  function handleSkip() {
-    if (randomMode) { onSkipRandom?.(); return; }
-    if (audioRef.current) {
-      const t = Math.min(duration, currentTime + 10);
-      audioRef.current.currentTime = t;
-      if (guideRef.current) guideRef.current.currentTime = t;
-      setCurrentTime(t);
-    }
-  }
-
-  function handleRestart() {
-    if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); }
-    if (guideRef.current) guideRef.current.currentTime = 0;
-  }
-
-  // ── Colour-wash rendering for active line ─────────────────────────────────
-  const lyrics = song.lyrics || [];
+  // ── Shared render pieces ───────────────────────────────────────────────────
+  const lyrics     = song.lyrics || [];
+  const pct        = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const c          = songColor(song);
+  const showNextUp = !!nextUpSong && duration > 0 && (duration - currentTime) <= 20 && (duration - currentTime) > 0;
 
   function renderActiveLine(line) {
     if (!line) return '\u00A0';
     const lineColor = line.color || 'var(--amber)';
     if (line.words?.length > 0) {
-      return (
-        <span>
-          {line.words.map((w, i) => {
-            let color;
-            if (currentTime >= w.end)       color = 'rgba(237,233,224,0.18)';      // past — dim
-            else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); // active — pale
-            else                             color = lineColor;                      // upcoming — full colour
-            return <span key={i} style={{ color, transition: 'color 0.06s' }}>{w.word}{i < line.words.length - 1 ? ' ' : ''}</span>;
-          })}
-        </span>
-      );
+      return (<span>{line.words.map((w, i) => { let color; if (currentTime >= w.end) color = 'rgba(237,233,224,0.18)'; else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); else color = lineColor; return <span key={i} style={{ color, transition: 'color 0.06s' }}>{w.word}{i < line.words.length - 1 ? ' ' : ''}</span>; })}</span>);
     }
     return line.text;
   }
 
-  const pct        = duration > 0 ? (currentTime / duration) * 100 : 0;
-  const c          = songColor(song);
-  const offsets    = [-2, -1, 0, 1, 2];
-  const classMap   = { '-2': 'past', '-1': 'past', '0': 'active', '1': 'next1', '2': 'next2' };
-  const showNextUp = !!nextUpSong && duration > 0 && (duration - currentTime) <= 20 && (duration - currentTime) > 0;
+  const audioEls = (<>
+    {song.audioUrl  && <audio ref={audioRef} src={song.audioUrl}  preload="metadata" />}
+    {song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="metadata" />}
+  </>);
 
-  return (
-    <div className="player-screen">
-      {song.audioUrl  && <audio ref={audioRef} src={song.audioUrl}  preload="metadata" />}
-      {song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="metadata" />}
+  const randomBand = randomMode && (
+    <div className="random-band">
+      <div className="random-band-label"><i className="ti ti-arrows-shuffle" style={{ fontSize: 14 }} aria-hidden="true" /> Random mode</div>
+      <button className="random-stop-btn" onClick={onStopRandom} aria-label="Stop random mode"><i className="ti ti-x" style={{ fontSize: 11 }} aria-hidden="true" /> Stop</button>
+    </div>
+  );
 
-      {randomMode && (
-        <div className="random-band">
-          <div className="random-band-label">
-            <i className="ti ti-arrows-shuffle" style={{ fontSize: 14 }} aria-hidden="true" /> Random mode
+  const lyricsArea = (
+    <div className="lyrics-area">
+      {lyrics.length === 0 && !song.plainLyrics && (<p style={{ color: 'var(--muted)', fontStyle: 'italic', fontSize: 15 }}>No lyrics added</p>)}
+      {lyrics.length === 0 && song.plainLyrics && (<div style={{ overflowY: 'auto', maxHeight: 300, textAlign: 'center', fontSize: 14, lineHeight: 2.1, color: 'var(--muted)', width: '100%' }}>{song.plainLyrics.split('\n').map((ln, i) => (<div key={i} style={{ color: ln.trim() ? 'var(--text)' : 'transparent', minHeight: '1.5em' }}>{ln || '·'}</div>))}</div>)}
+      {lyrics.length > 0 && [-2,-1,0,1,2].map(off => { const line = lyrics[activeLine + off]; const isCur = off === 0; const lineColor = line?.color || 'var(--amber)'; const cls = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' }[String(off)]; return (<div key={off} className={`lyric-line ${cls}`} style={isCur ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{isCur ? renderActiveLine(line) : (line ? line.text : '\u00A0')}</div>); })}
+    </div>
+  );
+
+  const nextUpCard = showNextUp && (() => { const nc = songColor(nextUpSong); return (<div className="next-up-card" onClick={() => onSkipRandom?.()}><div className="song-avatar" style={{ background: nc.bg, color: nc.fg, width: 36, height: 36, fontSize: 15, flexShrink: 0 }}>{nextUpSong.title[0]?.toUpperCase()}</div><div style={{ flex: 1, minWidth: 0 }}><p className="next-up-label">Up next</p><p className="next-up-title">{nextUpSong.title}</p><p className="next-up-artist">{nextUpSong.artist}</p></div><i className="ti ti-chevron-right" style={{ fontSize: 16, color: 'var(--muted)', flexShrink: 0 }} aria-hidden="true" /></div>); })();
+
+  const playBtn = (
+    <div style={{ position: 'relative', width: 66, height: 66, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {pressProgress > 0 && (<svg style={{ position: 'absolute', inset: -5, width: 76, height: 76, pointerEvents: 'none' }} viewBox="0 0 76 76"><circle cx="38" cy="38" r="35" fill="none" stroke="rgba(165,94,234,0.25)" strokeWidth="3" /><circle cx="38" cy="38" r="35" fill="none" stroke="#A55EEA" strokeWidth="3" strokeDasharray={`${pressProgress * 2 * Math.PI * 35} ${2 * Math.PI * 35}`} strokeLinecap="round" transform="rotate(-90 38 38)" /></svg>)}
+      <button className="play-btn" style={{ background: longPressing ? 'rgba(165,94,234,0.9)' : undefined }} onClick={handlePlayClick} onPointerDown={handlePlayPointerDown} onPointerUp={handlePlayPointerUp} onPointerLeave={handlePlayPointerLeave} disabled={!song.hasAudio} aria-label={playing ? 'Pause' : 'Play — hold for random'}>
+        <i className={`ti ${playing ? 'ti-player-pause' : 'ti-player-play'}`} aria-hidden="true" />
+      </button>
+    </div>
+  );
+
+  const hintLine = <p style={{ textAlign: 'center', fontSize: 10, color: 'rgba(91,98,128,0.4)', padding: '0 0 8px', margin: 0 }}>Space · Esc · ← → · M · R · F</p>;
+
+  // ── CINEMATIC LAYOUT (desktop ≥768px) ──────────────────────────────────────
+  if (isCinematic) {
+    return (
+      <div className="player-screen" style={{ display: 'flex', flexDirection: 'column', height: '100dvh' }}>
+        {audioEls}
+        {randomBand}
+
+        {/* Compact title bar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 28px', borderBottom: '0.5px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
+          <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
+          <p style={{ flex: 1, fontSize: 14, color: 'rgba(200,205,230,0.65)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {song.title}{song.artist ? ` — ${song.artist}` : ''}
+          </p>
+          {!song.hasAudio && <span className="badge badge-amber">No audio</span>}
+        </div>
+
+        {/* Lyrics — takes all remaining space, large fonts via CSS */}
+        {lyricsArea}
+
+        {/* Next-up card */}
+        {nextUpCard}
+
+        {/* Guide slider — appears above the bottom bar when expanded */}
+        {guideExpanded && (
+          <div className="cinematic-guide-panel">
+            <i className="ti ti-microphone" style={{ fontSize: 18, color: guideVolume > 0 ? 'var(--amber)' : 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
+            <input type="range" min="0" max="1" step="0.02" value={guideVolume} onChange={e => setGuideVolume(parseFloat(e.target.value))} className="guide-slider" aria-label="Guide vocals volume" />
+            <span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}</span>
           </div>
-          <button className="random-stop-btn" onClick={onStopRandom} aria-label="Stop random mode">
-            <i className="ti ti-x" style={{ fontSize: 11 }} aria-hidden="true" /> Stop
+        )}
+
+        {/* Cinematic bottom bar — all controls in one strip */}
+        <div className="cinematic-bar">
+          <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart"><i className="ti ti-player-skip-back" aria-hidden="true" /></button>
+          {playBtn}
+          <button className="ctrl-btn" onClick={handleSkip} aria-label={randomMode ? 'Next random' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
+          <div className="cinematic-progress" onClick={seek}><div className="cinematic-fill" style={{ width: `${pct}%` }} /></div>
+          <span className="cinematic-time">{fmt(currentTime)} / {fmt(duration)}</span>
+          <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals">
+            <i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />
+            {guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}
           </button>
         </div>
-      )}
 
+        {hintLine}
+      </div>
+    );
+  }
+
+  // ── MOBILE LAYOUT ──────────────────────────────────────────────────────────
+  return (
+    <div className="player-screen">
+      {audioEls}
+      {randomBand}
       <div className="player-header">
         <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
-        <div className="song-avatar" style={{ background: c.bg, color: c.fg, width: 44, height: 44, fontSize: 18 }}>
-          {song.title[0]?.toUpperCase()}
-        </div>
-        <div className="player-meta">
-          <div className="player-title">{song.title}</div>
-          <div className="player-artist">{song.artist || 'Unknown artist'}</div>
-        </div>
+        <div className="song-avatar" style={{ background: c.bg, color: c.fg, width: 44, height: 44, fontSize: 18 }}>{song.title[0]?.toUpperCase()}</div>
+        <div className="player-meta"><div className="player-title">{song.title}</div><div className="player-artist">{song.artist || 'Unknown artist'}</div></div>
         {!song.hasAudio && <span className="badge badge-amber">No audio</span>}
       </div>
-
-      <div className="lyrics-area">
-        {lyrics.length === 0 && !song.plainLyrics && (
-          <p style={{ color: 'var(--muted)', fontStyle: 'italic', fontSize: 15 }}>No lyrics added</p>
-        )}
-        {lyrics.length === 0 && song.plainLyrics && (
-          <div style={{ overflowY: 'auto', maxHeight: 300, textAlign: 'center', fontSize: 14, lineHeight: 2.1, color: 'var(--muted)', width: '100%' }}>
-            {song.plainLyrics.split('\n').map((ln, i) => (
-              <div key={i} style={{ color: ln.trim() ? 'var(--text)' : 'transparent', minHeight: '1.5em' }}>{ln || '·'}</div>
-            ))}
-          </div>
-        )}
-        {lyrics.length > 0 && offsets.map(off => {
-          const line      = lyrics[activeLine + off];
-          const isCur     = off === 0;
-          const lineColor = line?.color || 'var(--amber)';
-          return (
-            <div key={off} className={`lyric-line ${classMap[String(off)]}`}
-              style={isCur ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>
-              {isCur ? renderActiveLine(line) : (line ? line.text : '\u00A0')}
-            </div>
-          );
-        })}
-      </div>
-
-      {showNextUp && (() => {
-        const nc = songColor(nextUpSong);
-        return (
-          <div className="next-up-card" onClick={() => onSkipRandom?.()}>
-            <div className="song-avatar" style={{ background: nc.bg, color: nc.fg, width: 36, height: 36, fontSize: 15, flexShrink: 0 }}>
-              {nextUpSong.title[0]?.toUpperCase()}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <p className="next-up-label">Up next</p>
-              <p className="next-up-title">{nextUpSong.title}</p>
-              <p className="next-up-artist">{nextUpSong.artist}</p>
-            </div>
-            <i className="ti ti-chevron-right" style={{ fontSize: 16, color: 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
-          </div>
-        );
-      })()}
-
-      <div className="progress-wrap">
-        <div className="progress-track" onClick={seek}>
-          <div className="progress-fill" style={{ width: `${pct}%` }} />
-        </div>
-        <div className="time-row"><span>{fmt(currentTime)}</span><span>{fmt(duration)}</span></div>
-      </div>
-
+      {lyricsArea}
+      {nextUpCard}
+      <div className="progress-wrap"><div className="progress-track" onClick={seek}><div className="progress-fill" style={{ width: `${pct}%` }} /></div><div className="time-row"><span>{fmt(currentTime)}</span><span>{fmt(duration)}</span></div></div>
       <div className="guide-panel">
-        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`}
-          onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals">
+        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals">
           <i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />
           {guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}
         </button>
-        {guideExpanded && (
-          <div className="guide-slider-wrap">
-            <span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>
-              {guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}
-            </span>
-            <input type="range" min="0" max="1" step="0.02" value={guideVolume}
-              onChange={e => setGuideVolume(parseFloat(e.target.value))}
-              className="guide-slider" aria-label="Guide vocals volume" />
-          </div>
-        )}
+        {guideExpanded && (<div className="guide-slider-wrap"><span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}</span><input type="range" min="0" max="1" step="0.02" value={guideVolume} onChange={e => setGuideVolume(parseFloat(e.target.value))} className="guide-slider" aria-label="Guide vocals volume" /></div>)}
       </div>
-
       <div className="controls">
-        <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart">
-          <i className="ti ti-player-skip-back" aria-hidden="true" />
-        </button>
-
-        <div style={{ position: 'relative', width: 66, height: 66, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {pressProgress > 0 && (
-            <svg style={{ position: 'absolute', inset: -5, width: 76, height: 76, pointerEvents: 'none' }} viewBox="0 0 76 76">
-              <circle cx="38" cy="38" r="35" fill="none" stroke="rgba(165,94,234,0.25)" strokeWidth="3" />
-              <circle cx="38" cy="38" r="35" fill="none" stroke="#A55EEA" strokeWidth="3"
-                strokeDasharray={`${pressProgress * 2 * Math.PI * 35} ${2 * Math.PI * 35}`}
-                strokeLinecap="round" transform="rotate(-90 38 38)" />
-            </svg>
-          )}
-          <button className="play-btn"
-            style={{ background: longPressing ? 'rgba(165,94,234,0.9)' : undefined }}
-            onPointerDown={handlePointerDown}
-            onPointerUp={handlePointerUp}
-            onPointerLeave={() => setLongPressing(false)}
-            disabled={!song.hasAudio}
-            aria-label={playing ? 'Pause' : 'Play — hold for random mode'}>
-            <i className={`ti ${playing ? 'ti-player-pause' : 'ti-player-play'}`} aria-hidden="true" />
-          </button>
-        </div>
-
-        <button className="ctrl-btn" onClick={handleSkip}
-          aria-label={randomMode ? 'Next random song' : 'Skip 10 seconds'}>
-          <i className="ti ti-player-skip-forward" aria-hidden="true" />
-        </button>
+        <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart"><i className="ti ti-player-skip-back" aria-hidden="true" /></button>
+        {playBtn}
+        <button className="ctrl-btn" onClick={handleSkip} aria-label={randomMode ? 'Next random' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
       </div>
-
-      {/* Keyboard shortcut hint — shown briefly on first open, fades away */}
-      <p style={{ textAlign: 'center', fontSize: 10, color: 'rgba(91,98,128,0.45)', padding: '0 0 8px', margin: 0 }}>
-        Space · Esc · ← → · M mute · R random · F fullscreen
-      </p>
+      {hintLine}
     </div>
   );
 }
@@ -1031,59 +630,29 @@ function SettingsScreen({ settings, onSettingsChange }) {
   const hasSupabase = !!(SUPA_URL && SUPA_KEY);
   return (
     <div className="screen">
-      <div className="page-header">
-        <div><div className="page-title">Settings</div><div className="page-sub">App configuration</div></div>
-      </div>
+      <div className="page-header"><div><div className="page-title">Settings</div><div className="page-sub">App configuration</div></div></div>
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div className={hasSupabase ? 'success-box' : 'warn-box'}>
-          <p style={{ fontWeight: 700, margin: '0 0 4px' }}>
-            <i className={`ti ${hasSupabase ? 'ti-check' : 'ti-alert-triangle'}`} aria-hidden="true" />
-            {' '}Supabase — {hasSupabase ? 'connected' : 'not configured'}
-          </p>
-          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>
-            {hasSupabase ? 'Songs, instrumental and vocal stems saved to cloud. Deleted songs archived to deleted/ folder.'
-              : 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.'}
-          </p>
+          <p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className={`ti ${hasSupabase ? 'ti-check' : 'ti-alert-triangle'}`} aria-hidden="true" /> Supabase — {hasSupabase ? 'connected' : 'not configured'}</p>
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{hasSupabase ? 'Songs and audio files saved to cloud. Deleted songs archived to deleted/ folder.' : 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.'}</p>
         </div>
         <div className="card">
           <span className="card-label">Guide vocals — default level</span>
-          <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>
-            Starting volume when a song opens. 0 = silent. Adjust live in the player with the 🎤 button or M key.
-          </p>
+          <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Starting volume when a song opens. Adjust live with the 🎤 button or M key.</p>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <i className="ti ti-microphone" style={{ fontSize: 18, color: settings.defaultGuideVolume > 0 ? 'var(--amber)' : 'var(--muted)' }} aria-hidden="true" />
-            <input type="range" min="0" max="1" step="0.05"
-              value={settings.defaultGuideVolume ?? 0}
-              onChange={e => onSettingsChange({ defaultGuideVolume: parseFloat(e.target.value) })}
-              style={{ flex: 1 }} aria-label="Default guide vocals level" />
-            <span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>
-              {settings.defaultGuideVolume > 0 ? `${Math.round((settings.defaultGuideVolume ?? 0) * 100)}%` : 'Off'}
-            </span>
+            <input type="range" min="0" max="1" step="0.05" value={settings.defaultGuideVolume ?? 0} onChange={e => onSettingsChange({ defaultGuideVolume: parseFloat(e.target.value) })} style={{ flex: 1 }} />
+            <span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>{settings.defaultGuideVolume > 0 ? `${Math.round((settings.defaultGuideVolume ?? 0) * 100)}%` : 'Off'}</span>
           </div>
         </div>
         <div className="card">
           <span className="card-label">After a song finishes</span>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
-            {[
-              { value: false, label: 'Stop playing',           sub: 'Player pauses at the end (default)' },
-              { value: true,  label: 'Play next random song',  sub: 'Picks a random song automatically' },
-            ].map(opt => (
+            {[{ value: false, label: 'Stop playing', sub: 'Player pauses at the end (default)' }, { value: true, label: 'Play next random song', sub: 'Picks a random song automatically' }].map(opt => (
               <label key={String(opt.value)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '4px 0' }}>
-                <div style={{
-                  width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '2px solid',
-                  borderColor: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'var(--border)',
-                  background:  (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  {(settings.autoPlayRandom ?? false) === opt.value && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />}
-                </div>
-                <div>
-                  <p style={{ fontSize: 14, margin: 0 }}>{opt.label}</p>
-                  <p style={{ fontSize: 11, color: 'var(--muted)', margin: '1px 0 0' }}>{opt.sub}</p>
-                </div>
-                <input type="radio" style={{ display: 'none' }}
-                  checked={(settings.autoPlayRandom ?? false) === opt.value}
-                  onChange={() => onSettingsChange({ autoPlayRandom: opt.value })} />
+                <div style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '2px solid', borderColor: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'var(--border)', background: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{(settings.autoPlayRandom ?? false) === opt.value && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />}</div>
+                <div><p style={{ fontSize: 14, margin: 0 }}>{opt.label}</p><p style={{ fontSize: 11, color: 'var(--muted)', margin: '1px 0 0' }}>{opt.sub}</p></div>
+                <input type="radio" style={{ display: 'none' }} checked={(settings.autoPlayRandom ?? false) === opt.value} onChange={() => onSettingsChange({ autoPlayRandom: opt.value })} />
               </label>
             ))}
           </div>
@@ -1091,24 +660,13 @@ function SettingsScreen({ settings, onSettingsChange }) {
         <div className="card">
           <span className="card-label">Keyboard shortcuts</span>
           <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 13 }}>
-            {[['Space', 'Play / pause'], ['Esc', 'Close player'], ['←', 'Restart song (or prev if within 2s)'], ['→', 'Skip +10s (or next random)'], ['M', 'Toggle guide vocals mute'], ['R', 'Toggle random mode'], ['F', 'Fullscreen']].map(([k, v]) => (
-              <>
-                <span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span>
-                <span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span>
-              </>
+            {[['Space','Play / pause'],['Esc','Close player'],['←','Restart (or prev song if within 2s)'],['→','Skip +10s (or next random)'],['M','Toggle guide vocals mute'],['R','Toggle random mode'],['F','Fullscreen']].map(([k,v]) => (
+              <><span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span><span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span></>
             ))}
           </div>
         </div>
-        <div className="success-box">
-          <p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Replicate — server-side</p>
-          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Demucs + Whisper via <code>/api/replicate</code>. API key in Vercel env vars.</p>
-        </div>
-        <div className="card">
-          <span className="card-label">Roadmap</span>
-          <p className="pin-note" style={{ marginBottom: 8 }}><i className="ti ti-pin" aria-hidden="true" /> v1.3 — Background image gallery per song</p>
-          <p className="pin-note" style={{ marginBottom: 8 }}><i className="ti ti-pin" aria-hidden="true" /> v1.4 — Pitch / key shift + mic reverb</p>
-          <p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> v1.5 — Queue / playlist mode</p>
-        </div>
+        <div className="success-box"><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Replicate — server-side</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Demucs + Whisper via <code>/api/replicate</code>. API key in Vercel env vars.</p></div>
+        <div className="card"><span className="card-label">Roadmap</span><p className="pin-note" style={{ marginBottom: 8 }}><i className="ti ti-pin" aria-hidden="true" /> v1.3 — Background image gallery per song</p><p className="pin-note" style={{ marginBottom: 8 }}><i className="ti ti-pin" aria-hidden="true" /> v1.4 — Pitch / key shift + mic reverb</p><p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> v1.5 — Queue / playlist mode</p></div>
       </div>
     </div>
   );
@@ -1126,156 +684,59 @@ export default function App() {
   const [nextUpSong, setNextUpSong] = useState(null);
   const [settings, setSettings]     = useState(() => ({ defaultGuideVolume: 0, autoPlayRandom: false, ...loadSettings() }));
 
-  // Ref-based flags — don't need to cause re-renders
-  const shouldAutoPlayRef = useRef(false); // true when next song should autoplay
-  const songHistoryRef    = useRef([]);    // stack of previously played songs for ← navigation
+  const shouldAutoPlayRef = useRef(false);
+  const songHistoryRef    = useRef([]);
+
+  useEffect(() => { loadLibrary().then(loaded => { setSongs(loaded); setLoading(false); }); }, []);
 
   useEffect(() => {
-    loadLibrary().then(loaded => { setSongs(loaded); setLoading(false); });
-  }, []);
-
-  // Pre-pick next song whenever active song changes in random mode
-  useEffect(() => {
-    if (randomMode && activeSong && songs.length > 1) {
-      setNextUpSong(pickRandomSong(songs, activeSong.id));
-    } else if (!randomMode) {
-      setNextUpSong(null);
-    }
+    if (randomMode && activeSong && songs.length > 1) setNextUpSong(pickRandomSong(songs, activeSong.id));
+    else if (!randomMode) setNextUpSong(null);
   }, [randomMode, activeSong?.id, songs.length]);
 
-  // ── Navigation helpers ─────────────────────────────────────────────────────
+  function navigateToSong(song) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = true; setActiveSong(song); }
+  function handlePlaySong(song) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = false; if (randomMode) stopRandomMode(); setActiveSong(song); }
+  function navigateToPrevious() { const prev = songHistoryRef.current[songHistoryRef.current.length - 1]; if (!prev) return; songHistoryRef.current = songHistoryRef.current.slice(0, -1); shouldAutoPlayRef.current = true; setActiveSong(prev); }
 
-  // Navigate to a song that should autoplay (queued: random, auto-play, future queue)
-  function navigateToSong(song) {
-    if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong];
-    shouldAutoPlayRef.current = true;
-    setActiveSong(song);
-  }
-
-  // Navigate to a song that was manually selected — no autoplay, exits random mode
-  function handlePlaySong(song) {
-    if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong];
-    shouldAutoPlayRef.current = false;
-    if (randomMode) stopRandomMode();
-    setActiveSong(song);
-  }
-
-  // Go back to the previous song in history
-  function navigateToPrevious() {
-    const prev = songHistoryRef.current[songHistoryRef.current.length - 1];
-    if (!prev) return;
-    songHistoryRef.current = songHistoryRef.current.slice(0, -1);
-    shouldAutoPlayRef.current = true; // going back restores playback
-    setActiveSong(prev);
-  }
-
-  // ── Song end handler ───────────────────────────────────────────────────────
   function handleSongEnd() {
-    if (randomMode) {
-      const next = nextUpSong || pickRandomSong(songs, activeSong?.id);
-      if (next) { navigateToSong(next); return; }
-    }
-    if (settings.autoPlayRandom && songs.length > 1) {
-      const next = pickRandomSong(songs, activeSong?.id);
-      if (next) { navigateToSong(next); return; }
-    }
+    if (randomMode) { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } }
+    if (settings.autoPlayRandom && songs.length > 1) { const next = pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } }
     shouldAutoPlayRef.current = false;
   }
 
-  // ── Random mode ────────────────────────────────────────────────────────────
-  function startRandomMode() {
-    const first = pickRandomSong(songs, activeSong?.id);
-    if (!first) return;
-    setRandomMode(true);
-    navigateToSong(first);
-  }
+  function startRandomMode() { const first = pickRandomSong(songs, activeSong?.id); if (!first) return; setRandomMode(true); navigateToSong(first); }
+  function stopRandomMode()  { setRandomMode(false); setNextUpSong(null); }
+  function skipToNextRandom() { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) navigateToSong(next); }
 
-  function stopRandomMode() {
-    setRandomMode(false);
-    setNextUpSong(null);
-  }
+  function handleSettingsChange(patch) { const u = { ...settings, ...patch }; setSettings(u); persistSettings(u); }
+  async function handleAddSong(song)   { const s = { ...song, addedAt: Date.now() }; setSongs(prev => [s, ...prev]); setTab('library'); await saveSongData(s); }
+  async function handleSaveEdited(s)   { setSongs(prev => prev.map(x => x.id === s.id ? s : x)); setEditingSong(null); await saveSongData(s); }
+  async function handleDeleteSong(song) { setSongs(prev => prev.filter(s => s.id !== song.id)); await archiveDeletedSong(song); }
 
-  function skipToNextRandom() {
-    const next = nextUpSong || pickRandomSong(songs, activeSong?.id);
-    if (next) navigateToSong(next);
-  }
+  if (editingSong) return (<div className="app-shell app-shell--wide"><EditorScreen song={editingSong} onSave={handleSaveEdited} onBack={() => setEditingSong(null)} /></div>);
 
-  // ── Settings ───────────────────────────────────────────────────────────────
-  function handleSettingsChange(patch) {
-    const updated = { ...settings, ...patch };
-    setSettings(updated);
-    persistSettings(updated);
-  }
-
-  // ── Song management ────────────────────────────────────────────────────────
-  async function handleAddSong(song) {
-    const s = { ...song, addedAt: Date.now() };
-    setSongs(prev => [s, ...prev]);
-    setTab('library');
-    await saveSongData(s);
-  }
-
-  async function handleSaveEdited(updatedSong) {
-    setSongs(prev => prev.map(s => s.id === updatedSong.id ? updatedSong : s));
-    setEditingSong(null);
-    await saveSongData(updatedSong);
-  }
-
-  async function handleDeleteSong(song) {
-    setSongs(prev => prev.filter(s => s.id !== song.id));
-    await archiveDeletedSong(song); // archives JSON to deleted/ folder
-  }
-
-  // ── Render ─────────────────────────────────────────────────────────────────
-  if (editingSong) return (
-    <div className="app-shell app-shell--wide">
-      <EditorScreen song={editingSong} onSave={handleSaveEdited} onBack={() => setEditingSong(null)} />
-    </div>
-  );
-
+  // Player gets full-width shell so cinematic mode can use the whole viewport
   if (activeSong) return (
-    <div className="app-shell">
-      <PlayerScreen
-        song={activeSong}
-        settings={settings}
-        autoPlay={shouldAutoPlayRef.current}
-        randomMode={randomMode}
-        nextUpSong={nextUpSong}
-        onBack={() => { stopRandomMode(); setActiveSong(null); }}
-        onSongEnd={handleSongEnd}
-        onStartRandom={startRandomMode}
-        onStopRandom={stopRandomMode}
-        onSkipRandom={skipToNextRandom}
-        onGoToPrevious={navigateToPrevious}
-      />
+    <div className="app-shell app-shell--player">
+      <PlayerScreen song={activeSong} settings={settings} autoPlay={shouldAutoPlayRef.current} randomMode={randomMode} nextUpSong={nextUpSong}
+        onBack={() => { stopRandomMode(); setActiveSong(null); }} onSongEnd={handleSongEnd}
+        onStartRandom={startRandomMode} onStopRandom={stopRandomMode} onSkipRandom={skipToNextRandom} onGoToPrevious={navigateToPrevious} />
     </div>
   );
 
   return (
     <div className="app-shell">
-      {loading && (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}>
-          <i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading your library…
-        </div>
-      )}
-      {!loading && (
-        <>
-          {tab === 'library'  && <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} />}
-          {tab === 'add'      && <AddSongScreen onSave={handleAddSong} />}
-          {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} />}
-          <nav className="bottom-nav">
-            <button className={`nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}>
-              <i className="ti ti-playlist" aria-hidden="true" /> Library
-            </button>
-            <button className="fab" onClick={() => setTab('add')} aria-label="Add song">
-              <i className="ti ti-plus" aria-hidden="true" />
-            </button>
-            <button className={`nav-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}>
-              <i className="ti ti-settings" aria-hidden="true" /> Settings
-            </button>
-          </nav>
-        </>
-      )}
+      {loading && (<div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading your library…</div>)}
+      {!loading && (<>
+        {tab === 'library'  && <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} />}
+        {tab === 'add'      && <AddSongScreen onSave={handleAddSong} />}
+        {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} />}
+        <nav className="bottom-nav">
+          <button className={`nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /> Library</button>
+          <button className="fab" onClick={() => setTab('add')} aria-label="Add song"><i className="ti ti-plus" aria-hidden="true" /></button>
+          <button className={`nav-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}><i className="ti ti-settings" aria-hidden="true" /> Settings</button>
+        </nav>
+      </>)}
     </div>
   );
 }
