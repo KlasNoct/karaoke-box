@@ -12,26 +12,20 @@ async function uploadAudioToSupabase(file) {
   const path = `originals/${Date.now()}.${ext}`;
   const { error } = await supabase.storage.from('songs').upload(path, file, { upsert: false });
   if (error) throw new Error(`Audio upload failed: ${error.message}`);
-  const { data } = supabase.storage.from('songs').getPublicUrl(path);
-  return data.publicUrl;
+  return supabase.storage.from('songs').getPublicUrl(path).data.publicUrl;
 }
 
-// Upload a Replicate output URL permanently to Supabase storage
 async function uploadProcessedToSupabase(replicateUrl, folder) {
   if (!supabase) throw new Error('Supabase not configured.');
   const resp = await fetch(replicateUrl);
   if (!resp.ok) throw new Error(`Could not download processed audio (${resp.status})`);
   const blob = await resp.blob();
   const path = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2, 7)}.mp3`;
-  const { error } = await supabase.storage.from('songs').upload(path, blob, {
-    contentType: 'audio/mpeg', upsert: false,
-  });
+  const { error } = await supabase.storage.from('songs').upload(path, blob, { contentType: 'audio/mpeg', upsert: false });
   if (error) throw new Error(`Failed to save to ${folder}: ${error.message}`);
-  const { data } = supabase.storage.from('songs').getPublicUrl(path);
-  return data.publicUrl;
+  return supabase.storage.from('songs').getPublicUrl(path).data.publicUrl;
 }
 
-// Delete a file from Supabase by its public URL
 async function deleteSupabaseFile(publicUrl) {
   if (!supabase || !publicUrl) return;
   try {
@@ -46,6 +40,25 @@ async function saveSongData(song) {
   const { error } = await supabase.storage.from('songs')
     .upload(`library/${song.id}.json`, blob, { upsert: true, contentType: 'application/json' });
   if (error) console.warn('Cloud save failed:', error.message);
+}
+
+// Archive a deleted song to deleted/ folder (keeps metadata + audio URLs for recovery)
+async function archiveDeletedSong(song) {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.storage.from('songs').download(`library/${song.id}.json`);
+    if (data) {
+      const current = JSON.parse(await data.text());
+      const archived = new Blob(
+        [JSON.stringify({ ...current, _deleted: true, _deletedAt: Date.now() })],
+        { type: 'application/json' }
+      );
+      await supabase.storage.from('songs')
+        .upload(`deleted/${song.id}.json`, archived, { upsert: true, contentType: 'application/json' });
+    }
+  } catch (e) { console.warn('Could not archive to deleted/ folder:', e.message); }
+  // Always remove from active library
+  await supabase.storage.from('songs').remove([`library/${song.id}.json`]);
 }
 
 async function loadLibrary() {
@@ -64,20 +77,10 @@ async function loadLibrary() {
   } catch { return []; }
 }
 
-async function deleteSongData(songId) {
-  if (!supabase) return;
-  await supabase.storage.from('songs').remove([`library/${songId}.json`]);
-}
-
-// ── App settings (localStorage) ───────────────────────────────────────────────
+// ── Settings ──────────────────────────────────────────────────────────────────
 const SETTINGS_KEY = 'karaoke_settings';
-function loadSettings() {
-  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); }
-  catch { return {}; }
-}
-function persistSettings(s) {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch {}
-}
+const loadSettings  = () => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } };
+const persistSettings = s => { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch {} };
 
 // ── Replicate ─────────────────────────────────────────────────────────────────
 const DEMUCS_VERSION  = '25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953';
@@ -130,12 +133,7 @@ async function lrcSearch(artist, title) {
     const list = await r.json();
     if (!list?.length) return null;
     const hit = list.find(x => x.syncedLyrics) || list[0];
-    return {
-      synced: hit.syncedLyrics ? parseLRC(hit.syncedLyrics) : [],
-      plain: hit.plainLyrics || '',
-      foundTitle: hit.trackName,
-      foundArtist: hit.artistName,
-    };
+    return { synced: hit.syncedLyrics ? parseLRC(hit.syncedLyrics) : [], plain: hit.plainLyrics || '', foundTitle: hit.trackName, foundArtist: hit.artistName };
   } catch { return null; }
 }
 
@@ -149,9 +147,7 @@ function whisperToLines(out) {
     })).filter(l => l.text);
   }
   const text = out.transcription || out.text || (typeof out === 'string' ? out : '');
-  return text.split(/\n+/).filter(Boolean).map((t, i) => ({
-    id: uid(), time: i * 3, text: t.trim(), color: null, words: [],
-  }));
+  return text.split(/\n+/).filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t.trim(), color: null, words: [] }));
 }
 
 function getInstrumental(out) {
@@ -169,19 +165,14 @@ function getInstrumental(out) {
 function getVocals(out) {
   if (!out) return null;
   if (typeof out === 'string') return null;
-  if (Array.isArray(out))
-    return out.find(u => typeof u === 'string' && u.includes('vocals') && !u.includes('no_vocals')) || null;
+  if (Array.isArray(out)) return out.find(u => typeof u === 'string' && u.includes('vocals') && !u.includes('no_vocals')) || null;
   return out.vocals || null;
 }
 
-// Make a pale/washed version of a hex colour for the colour-wash effect
 function makePale(hex) {
   if (!hex || !hex.startsWith('#') || hex.length < 7) return 'rgba(255,255,255,0.38)';
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  // Mix 25% original + 75% white
-  return `rgb(${Math.round(r * 0.25 + 255 * 0.75)},${Math.round(g * 0.25 + 255 * 0.75)},${Math.round(b * 0.25 + 255 * 0.75)})`;
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  return `rgb(${Math.round(r * 0.25 + 191)},${Math.round(g * 0.25 + 191)},${Math.round(b * 0.25 + 191)})`;
 }
 
 function pickRandomSong(songs, excludeId) {
@@ -226,7 +217,7 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete }) {
     <div className="screen">
       <div className="page-header">
         <div>
-          <div className="page-title">🎤 Karaoke</div>
+          <div className="page-title">🎤 KaraKlas</div>
           <div className="page-sub">{songs.length} song{songs.length !== 1 ? 's' : ''} in your box</div>
         </div>
       </div>
@@ -245,31 +236,27 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete }) {
         {filtered.length === 0 && songs.length > 0 && (
           <p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>No results for "{q}"</p>
         )}
-        {filtered.map(song => {
-          const c = songColor(song);
-          return (
-            <div key={song.id} className="song-card" onClick={() => onPlay(song)}>
-              <div className="song-avatar" style={{ background: c.bg, color: c.fg }}>{song.title[0]?.toUpperCase()}</div>
-              <div className="song-info">
-                <div className="song-title">{song.title}</div>
-                <div className="song-artist">{song.artist || 'Unknown artist'}</div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-                {song.hasAudio && <span className="badge badge-green">Ready</span>}
-                {song.lyricsType === 'synced' && <span className="badge badge-blue">Synced</span>}
-                <button className="btn btn-ghost" style={{ padding: 7 }}
-                  onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit lyrics">
-                  <i className="ti ti-edit" style={{ fontSize: 18, color: 'var(--muted)' }} aria-hidden="true" />
-                </button>
-                <button className="btn btn-ghost" style={{ padding: 7 }}
-                  onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${song.title}"?`)) onDelete(song.id); }}
-                  aria-label="Delete song">
-                  <i className="ti ti-trash" style={{ fontSize: 18, color: 'var(--muted)' }} aria-hidden="true" />
-                </button>
-              </div>
+        {filtered.map(song => (
+          <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onPlay(song)}>
+            <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+              <div className="song-title">{song.title}</div>
+              <div className="song-artist">{song.artist || 'Unknown artist'}</div>
             </div>
-          );
-        })}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, flexShrink: 0 }}>
+              {song.hasAudio      && <span className="badge badge-green badge-xs">Ready</span>}
+              {song.lyricsType === 'synced' && <span className="badge badge-blue badge-xs">Synced</span>}
+            </div>
+            <button className="btn btn-ghost" style={{ padding: 7 }}
+              onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit">
+              <i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" />
+            </button>
+            <button className="btn btn-ghost" style={{ padding: 7 }}
+              onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${song.title}"?`)) onDelete(song); }}
+              aria-label="Delete">
+              <i className="ti ti-trash" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" />
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -278,9 +265,11 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete }) {
 
 // ── EDITOR SCREEN ─────────────────────────────────────────────────────────────
 function EditorScreen({ song, onSave, onBack }) {
-  const [lines, setLines]         = useState((song.lyrics || []).map(l => ({ id: uid(), color: null, words: [], ...l })));
-  const [activeIdx, setActiveIdx] = useState(null);
-  const [saving, setSaving]       = useState(false);
+  const [localTitle,  setLocalTitle]  = useState(song.title  || '');
+  const [localArtist, setLocalArtist] = useState(song.artist || '');
+  const [lines, setLines]             = useState((song.lyrics || []).map(l => ({ id: uid(), color: null, words: [], ...l })));
+  const [activeIdx, setActiveIdx]     = useState(null);
+  const [saving, setSaving]           = useState(false);
 
   function updateLine(idx, field, value) {
     setLines(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l));
@@ -298,7 +287,13 @@ function EditorScreen({ song, onSave, onBack }) {
   async function handleSave() {
     setSaving(true);
     const sorted = [...lines].sort((a, b) => a.time - b.time);
-    await onSave({ ...song, lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none' });
+    await onSave({
+      ...song,
+      title:  localTitle.trim()  || song.title,
+      artist: localArtist.trim(),
+      lyrics: sorted,
+      lyricsType: sorted.length > 0 ? 'synced' : 'none',
+    });
     setSaving(false);
   }
 
@@ -309,17 +304,33 @@ function EditorScreen({ song, onSave, onBack }) {
           <i className="ti ti-arrow-left" style={{ fontSize: 20 }} aria-hidden="true" />
         </button>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: 16, fontWeight: 800, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.title}</p>
-          <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{lines.length} lines · {song.artist} · click a row to edit</p>
+          <p style={{ fontSize: 16, fontWeight: 800, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {localTitle || 'Edit song'}
+          </p>
+          <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{lines.length} lines · click a row to edit</p>
         </div>
         <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ flexShrink: 0 }}>
           {saving ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Saving…</> : 'Save'}
         </button>
       </div>
+
       <div className="editor-list">
+        {/* Title and artist editing */}
+        <div className="card" style={{ marginBottom: 8 }}>
+          <span className="card-label">Song details</span>
+          <div className="field">
+            <input value={localTitle}  onChange={e => setLocalTitle(e.target.value)}  placeholder="Song title"  />
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <input value={localArtist} onChange={e => setLocalArtist(e.target.value)} placeholder="Artist name" />
+          </div>
+        </div>
+
+        {/* Lyric lines */}
         {lines.map((line, idx) => {
           const isActive = activeIdx === idx;
           const dotColor = line.color || '#F4A827';
+
           if (isActive) return (
             <div key={line.id} className="editor-row-active">
               <div className="editor-row-top">
@@ -349,6 +360,7 @@ function EditorScreen({ song, onSave, onBack }) {
               </div>
             </div>
           );
+
           return (
             <div key={line.id} className="editor-row" onClick={() => setActiveIdx(idx)}>
               <span className="editor-ts">{fmt(line.time)}</span>
@@ -362,6 +374,7 @@ function EditorScreen({ song, onSave, onBack }) {
             </div>
           );
         })}
+
         <button className="btn btn-secondary" onClick={addLine} style={{ marginTop: 10, alignSelf: 'flex-start' }}>
           <i className="ti ti-plus" aria-hidden="true" /> Add line
         </button>
@@ -430,7 +443,6 @@ function AddSongScreen({ onSave }) {
       let demucsErr = null, whisperErr = null;
 
       await Promise.allSettled([
-        // ── Demucs: save both stems permanently, then delete original
         repPoll(demucsId, (st, el) => {
           if (!cancelRef.current.aborted)
             setDemucsState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el });
@@ -440,13 +452,9 @@ function AddSongScreen({ onSave }) {
           const vocalsRaw = getVocals(out);
           if (instrRaw)  instrumentalUrl = await uploadProcessedToSupabase(instrRaw,  'instrumentals');
           if (vocalsRaw) vocalsUrl       = await uploadProcessedToSupabase(vocalsRaw, 'vocals');
-          // Original is no longer needed — delete it to save storage
           if (originalSupabaseUrl) await deleteSupabaseFile(originalSupabaseUrl);
-        }).catch(e => {
-          stopTick('demucs'); demucsErr = e.message; setDemucsState(p => ({ ...p, status: 'error' }));
-        }),
+        }).catch(e => { stopTick('demucs'); demucsErr = e.message; setDemucsState(p => ({ ...p, status: 'error' })); }),
 
-        // ── Whisper
         whisperPredId
           ? repPoll(whisperPredId, (st, el) => {
               if (!cancelRef.current.aborted)
@@ -454,9 +462,7 @@ function AddSongScreen({ onSave }) {
             }, cancelRef.current).then(out => {
               stopTick('whisper'); setWhisperState(p => ({ ...p, status: 'done' }));
               lyrics = whisperToLines(out); lyricsType = 'synced';
-            }).catch(e => {
-              stopTick('whisper'); whisperErr = e.message; setWhisperState(p => ({ ...p, status: 'error' }));
-            })
+            }).catch(e => { stopTick('whisper'); whisperErr = e.message; setWhisperState(p => ({ ...p, status: 'error' })); })
           : Promise.resolve().then(() => {
               lyrics = lrcResult.synced.length > 0 ? lrcResult.synced
                 : lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] }));
@@ -482,9 +488,9 @@ function AddSongScreen({ onSave }) {
     const finalLyrics = r.lyrics?.length > 0 ? r.lyrics : textLines;
     onSave({
       id: uid(), title: title.trim(), artist: artist.trim(),
-      audioUrl:  r.instrumentalUrl || (instrFile ? URL.createObjectURL(instrFile) : null),
+      audioUrl: r.instrumentalUrl || (instrFile ? URL.createObjectURL(instrFile) : null),
       vocalsUrl: r.vocalsUrl || null,
-      hasAudio:  !!(r.instrumentalUrl || instrFile),
+      hasAudio: !!(r.instrumentalUrl || instrFile),
       lyrics: finalLyrics,
       lyricsType: r.lyrics?.length > 0 ? r.lyricsType : finalLyrics.length > 0 ? 'plain' : 'none',
       plainLyrics: lyricsText,
@@ -535,10 +541,8 @@ function AddSongScreen({ onSave }) {
           <i className={`ti ${result.instrumentalUrl ? 'ti-check' : 'ti-alert-triangle'}`}
             style={{ fontSize: 20, color: result.instrumentalUrl ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" />
           <div>
-            <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>
-              {result.instrumentalUrl ? 'Karaoke track saved to Supabase' : 'Vocal separation failed'}
-            </p>
-            {result.vocalsUrl && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>Vocal stem also saved — guide vocals available</p>}
+            <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.instrumentalUrl ? 'Karaoke track saved' : 'Vocal separation failed'}</p>
+            {result.vocalsUrl && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>Vocal stem saved — guide vocals available</p>}
             {result.demucsErr && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>{result.demucsErr}</p>}
           </div>
         </div>
@@ -573,7 +577,7 @@ function AddSongScreen({ onSave }) {
           <textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder="Paste lyrics here…" rows={6} />
         </div>
       )}
-      <p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> Use the ✏️ button on any song in the library to correct lyrics after saving</p>
+      <p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> Use ✏️ on any song in the library to correct lyrics after saving</p>
       <button className="btn btn-process btn-full" onClick={handleSave}>
         <i className="ti ti-device-floppy" aria-hidden="true" /> Save "{title}" to library
       </button>
@@ -613,7 +617,7 @@ function AddSongScreen({ onSave }) {
           <div className="card">
             <span className="card-label">Upload original song</span>
             <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>
-              Demucs separates the track into instrumental + vocal stem (both saved permanently). Whisper transcribes with word timing. The original is deleted after processing.
+              Demucs separates vocal stem + instrumental (both saved permanently). Whisper transcribes with word timing. Original is deleted after processing.
             </p>
             <label className={`upload-zone${origFile ? ' has-file' : ''}`}>
               <input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} />
@@ -661,39 +665,47 @@ function AddSongScreen({ onSave }) {
 
 
 // ── PLAYER SCREEN ─────────────────────────────────────────────────────────────
-function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEnd, onStartRandom, onStopRandom, onSkipRandom }) {
+function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack, onSongEnd, onStartRandom, onStopRandom, onSkipRandom, onGoToPrevious }) {
   const audioRef  = useRef(null);
   const guideRef  = useRef(null);
   const rafRef    = useRef(null);
   const lpRafRef  = useRef(null);
-  const lpTimerRef = useRef(null);
   const lpDone    = useRef(false);
+  // Stable ref for keyboard handler — avoids re-attaching on every state change
+  const stateRef  = useRef({});
 
-  const [playing, setPlaying]           = useState(false);
-  const [currentTime, setCurrentTime]   = useState(0);
-  const [duration, setDuration]         = useState(0);
-  const [activeLine, setActiveLine]     = useState(-1);
-  const [guideVolume, setGuideVolume]   = useState(settings?.defaultGuideVolume ?? 0);
+  const [playing, setPlaying]             = useState(false);
+  const [currentTime, setCurrentTime]     = useState(0);
+  const [duration, setDuration]           = useState(0);
+  const [activeLine, setActiveLine]       = useState(-1);
+  const [guideVolume, setGuideVolume]     = useState(settings?.defaultGuideVolume ?? 0);
   const [guideExpanded, setGuideExpanded] = useState(false);
   const [pressProgress, setPressProgress] = useState(0);
-  const [longPressing, setLongPressing] = useState(false);
+  const [longPressing, setLongPressing]   = useState(false);
 
-  const lyrics = song.lyrics || [];
+  // Keep stateRef current on every render — keyboard handler reads from here
+  stateRef.current = { playing, currentTime, duration, randomMode, guideVolume };
 
-  // Reset when song changes
+  // ── Reset on song change ───────────────────────────────────────────────────
   useEffect(() => {
     setPlaying(false);
     setCurrentTime(0);
     setDuration(0);
     setActiveLine(-1);
-    setGuideVolume(settings?.defaultGuideVolume ?? 0);
     setGuideExpanded(false);
+    setGuideVolume(settings?.defaultGuideVolume ?? 0);
     setPressProgress(0);
     setLongPressing(false);
     lpDone.current = false;
+
+    // Autoplay whenever a queued song arrives (random mode, auto-play setting, future queue)
+    if (autoPlay) {
+      const timer = setTimeout(() => setPlaying(true), 150);
+      return () => clearTimeout(timer);
+    }
   }, [song.id]);
 
-  // Main audio metadata
+  // ── Audio metadata ─────────────────────────────────────────────────────────
   useEffect(() => {
     const a = audioRef.current; if (!a) return;
     const onMeta = () => setDuration(a.duration);
@@ -703,68 +715,120 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
     return () => { a.removeEventListener('loadedmetadata', onMeta); a.removeEventListener('ended', onEnd); };
   }, [song.id]);
 
-  // Play / pause main + guide audio
+  // ── Play / pause ───────────────────────────────────────────────────────────
   useEffect(() => {
     const main  = audioRef.current;
     const guide = guideRef.current;
     if (!main) return;
     if (playing) {
       main.play().catch(() => setPlaying(false));
-      if (guide && guideVolume > 0) {
-        guide.currentTime = main.currentTime;
-        guide.play().catch(() => {});
-      }
+      if (guide && guideVolume > 0) { guide.currentTime = main.currentTime; guide.play().catch(() => {}); }
       const tick = () => {
         const t = main.currentTime;
         setCurrentTime(t);
-        if (lyrics.length > 0) {
+        if (song.lyrics?.length > 0) {
           let idx = -1;
-          for (let i = 0; i < lyrics.length; i++) { if (lyrics[i].time <= t) idx = i; else break; }
+          for (let i = 0; i < song.lyrics.length; i++) { if (song.lyrics[i].time <= t) idx = i; else break; }
           setActiveLine(idx);
         }
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
     } else {
-      main.pause();
-      guide?.pause();
-      cancelAnimationFrame(rafRef.current);
+      main.pause(); guide?.pause(); cancelAnimationFrame(rafRef.current);
     }
     return () => cancelAnimationFrame(rafRef.current);
   }, [playing]);
 
-  // Guide volume changes while playing
+  // ── Guide volume changes ───────────────────────────────────────────────────
   useEffect(() => {
-    const guide = guideRef.current;
-    if (!guide) return;
+    const guide = guideRef.current; if (!guide) return;
     guide.volume = guideVolume;
-    if (playing && guideVolume > 0) {
-      guide.currentTime = audioRef.current?.currentTime || 0;
-      guide.play().catch(() => {});
-    } else if (guideVolume === 0) {
-      guide.pause();
-    }
+    if (playing && guideVolume > 0) { guide.currentTime = audioRef.current?.currentTime || 0; guide.play().catch(() => {}); }
+    else if (guideVolume === 0) guide.pause();
   }, [guideVolume]);
 
-  // Long-press animation
+  // ── Long-press animation ───────────────────────────────────────────────────
   useEffect(() => {
     if (!longPressing) { setPressProgress(0); return; }
-    const start    = Date.now();
-    const DURATION = 650;
+    const start = Date.now();
     const frame = () => {
-      const p = Math.min(1, (Date.now() - start) / DURATION);
+      const p = Math.min(1, (Date.now() - start) / 650);
       setPressProgress(p);
       if (p < 1) { lpRafRef.current = requestAnimationFrame(frame); return; }
-      // Threshold reached — activate random mode
       lpDone.current = true;
       setLongPressing(false);
-      setPressProgress(0);
-      if (!randomMode) onStartRandom?.();
+      if (!stateRef.current.randomMode) onStartRandom?.();
     };
     lpRafRef.current = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(lpRafRef.current);
   }, [longPressing]);
 
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  useEffect(() => {
+    function onKey(e) {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      const { playing, currentTime, duration, randomMode, guideVolume } = stateRef.current;
+
+      switch (e.key) {
+        case ' ':
+          e.preventDefault();
+          setPlaying(p => !p);
+          break;
+
+        case 'Escape':
+          e.preventDefault();
+          onBack?.();
+          break;
+
+        case 'ArrowRight':
+          e.preventDefault();
+          if (randomMode) { onSkipRandom?.(); }
+          else if (audioRef.current) {
+            const t = Math.min(duration, currentTime + 10);
+            audioRef.current.currentTime = t;
+            if (guideRef.current) guideRef.current.currentTime = t;
+            setCurrentTime(t);
+          }
+          break;
+
+        case 'ArrowLeft':
+          e.preventDefault();
+          if (currentTime <= 2) {
+            // Within first 2 seconds — go to previous song
+            onGoToPrevious?.();
+          } else {
+            // Restart current song
+            if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); }
+            if (guideRef.current) guideRef.current.currentTime = 0;
+          }
+          break;
+
+        case 'm': case 'M':
+          // Toggle guide vocals mute
+          setGuideVolume(v => v > 0 ? 0 : 0.3);
+          break;
+
+        case 'r': case 'R':
+          // Toggle random mode
+          if (randomMode) onStopRandom?.(); else onStartRandom?.();
+          break;
+
+        case 'f': case 'F':
+          // Fullscreen toggle
+          if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen?.().catch?.(() => {});
+          } else {
+            document.exitFullscreen?.().catch?.(() => {});
+          }
+          break;
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []); // empty deps — reads current values via stateRef
+
+  // ── Handlers ───────────────────────────────────────────────────────────────
   function seek(e) {
     const rect = e.currentTarget.getBoundingClientRect();
     const t    = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * (duration || 0);
@@ -773,34 +837,36 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
     setCurrentTime(t);
   }
 
-  function handlePointerDown(e) {
-    e.preventDefault();
+  function handlePointerDown() {
+    // No preventDefault — that was breaking short press on some browsers
     lpDone.current = false;
     setLongPressing(true);
   }
 
   function handlePointerUp() {
     setLongPressing(false);
-    if (lpDone.current) { lpDone.current = false; return; }
-    // Short press: toggle play/pause
-    if (randomMode && !playing) {
-      setPlaying(true);
-    } else {
-      setPlaying(p => !p);
+    if (lpDone.current) { lpDone.current = false; return; } // long press already handled
+    setPlaying(p => !p); // short press = play/pause
+  }
+
+  function handleSkip() {
+    if (randomMode) { onSkipRandom?.(); return; }
+    if (audioRef.current) {
+      const t = Math.min(duration, currentTime + 10);
+      audioRef.current.currentTime = t;
+      if (guideRef.current) guideRef.current.currentTime = t;
+      setCurrentTime(t);
     }
   }
 
-  function handleGuideVolume(v) {
-    setGuideVolume(parseFloat(v));
+  function handleRestart() {
+    if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); }
+    if (guideRef.current) guideRef.current.currentTime = 0;
   }
 
-  // Skip: next random in random mode, else +10s
-  function handleSkip() {
-    if (randomMode) { onSkipRandom?.(); return; }
-    if (audioRef.current) audioRef.current.currentTime = Math.min(duration, currentTime + 10);
-  }
+  // ── Colour-wash rendering for active line ─────────────────────────────────
+  const lyrics = song.lyrics || [];
 
-  // Colour-wash rendering for the active lyric line
   function renderActiveLine(line) {
     if (!line) return '\u00A0';
     const lineColor = line.color || 'var(--amber)';
@@ -809,14 +875,10 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
         <span>
           {line.words.map((w, i) => {
             let color;
-            if (currentTime >= w.end)    color = 'rgba(237,233,224,0.18)'; // past — dim
+            if (currentTime >= w.end)       color = 'rgba(237,233,224,0.18)';      // past — dim
             else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); // active — pale
-            else color = lineColor; // upcoming — full chosen colour
-            return (
-              <span key={i} style={{ color, transition: 'color 0.06s' }}>
-                {w.word}{i < line.words.length - 1 ? ' ' : ''}
-              </span>
-            );
+            else                             color = lineColor;                      // upcoming — full colour
+            return <span key={i} style={{ color, transition: 'color 0.06s' }}>{w.word}{i < line.words.length - 1 ? ' ' : ''}</span>;
           })}
         </span>
       );
@@ -824,24 +886,21 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
     return line.text;
   }
 
-  const pct         = duration > 0 ? (currentTime / duration) * 100 : 0;
-  const c           = songColor(song);
-  const offsets     = [-2, -1, 0, 1, 2];
-  const classMap    = { '-2': 'past', '-1': 'past', '0': 'active', '1': 'next1', '2': 'next2' };
-  const showNextUp  = !!nextUpSong && duration > 0 && (duration - currentTime) <= 20 && (duration - currentTime) > 0;
-  const ringAngle   = pressProgress * 360;
+  const pct        = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const c          = songColor(song);
+  const offsets    = [-2, -1, 0, 1, 2];
+  const classMap   = { '-2': 'past', '-1': 'past', '0': 'active', '1': 'next1', '2': 'next2' };
+  const showNextUp = !!nextUpSong && duration > 0 && (duration - currentTime) <= 20 && (duration - currentTime) > 0;
 
   return (
     <div className="player-screen">
-      {song.audioUrl  && <audio ref={audioRef}  src={song.audioUrl}  preload="metadata" />}
-      {song.vocalsUrl && <audio ref={guideRef}  src={song.vocalsUrl} preload="metadata" volume={guideVolume} />}
+      {song.audioUrl  && <audio ref={audioRef} src={song.audioUrl}  preload="metadata" />}
+      {song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="metadata" />}
 
-      {/* Random mode band */}
       {randomMode && (
         <div className="random-band">
           <div className="random-band-label">
-            <i className="ti ti-arrows-shuffle" style={{ fontSize: 14 }} aria-hidden="true" />
-            Random mode
+            <i className="ti ti-arrows-shuffle" style={{ fontSize: 14 }} aria-hidden="true" /> Random mode
           </div>
           <button className="random-stop-btn" onClick={onStopRandom} aria-label="Stop random mode">
             <i className="ti ti-x" style={{ fontSize: 11 }} aria-hidden="true" /> Stop
@@ -849,7 +908,6 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
         </div>
       )}
 
-      {/* Song header */}
       <div className="player-header">
         <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
         <div className="song-avatar" style={{ background: c.bg, color: c.fg, width: 44, height: 44, fontSize: 18 }}>
@@ -862,7 +920,6 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
         {!song.hasAudio && <span className="badge badge-amber">No audio</span>}
       </div>
 
-      {/* Lyrics */}
       <div className="lyrics-area">
         {lyrics.length === 0 && !song.plainLyrics && (
           <p style={{ color: 'var(--muted)', fontStyle: 'italic', fontSize: 15 }}>No lyrics added</p>
@@ -879,17 +936,14 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
           const isCur     = off === 0;
           const lineColor = line?.color || 'var(--amber)';
           return (
-            <div key={off}
-              className={`lyric-line ${classMap[String(off)]}`}
-              style={isCur ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}
-            >
+            <div key={off} className={`lyric-line ${classMap[String(off)]}`}
+              style={isCur ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>
               {isCur ? renderActiveLine(line) : (line ? line.text : '\u00A0')}
             </div>
           );
         })}
       </div>
 
-      {/* Next up card — appears 20s before end when a next song is queued */}
       {showNextUp && (() => {
         const nc = songColor(nextUpSong);
         return (
@@ -907,7 +961,6 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
         );
       })()}
 
-      {/* Progress */}
       <div className="progress-wrap">
         <div className="progress-track" onClick={seek}>
           <div className="progress-fill" style={{ width: `${pct}%` }} />
@@ -915,67 +968,45 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
         <div className="time-row"><span>{fmt(currentTime)}</span><span>{fmt(duration)}</span></div>
       </div>
 
-      {/* Guide vocals control */}
       <div className="guide-panel">
-        <button
-          className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`}
-          onClick={() => setGuideExpanded(p => !p)}
-          aria-label={guideExpanded ? 'Close guide vocals' : 'Open guide vocals'}
-        >
-          <i className="ti ti-microphone" style={{ fontSize: 18 }} aria-hidden="true" />
-          {guideVolume > 0 && !guideExpanded && (
-            <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>
-          )}
+        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`}
+          onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals">
+          <i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />
+          {guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}
         </button>
         {guideExpanded && (
           <div className="guide-slider-wrap">
             <span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>
               {guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}
             </span>
-            <input
-              type="range" min="0" max="1" step="0.02"
-              value={guideVolume}
-              onChange={e => handleGuideVolume(e.target.value)}
-              className="guide-slider"
-              aria-label="Guide vocals volume"
-            />
-            {!song.vocalsUrl && (
-              <span style={{ fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>No stem</span>
-            )}
+            <input type="range" min="0" max="1" step="0.02" value={guideVolume}
+              onChange={e => setGuideVolume(parseFloat(e.target.value))}
+              className="guide-slider" aria-label="Guide vocals volume" />
           </div>
         )}
       </div>
 
-      {/* Controls */}
       <div className="controls">
-        <button className="ctrl-btn" onClick={() => {
-          if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); }
-          if (guideRef.current) guideRef.current.currentTime = 0;
-        }} aria-label="Restart">
+        <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart">
           <i className="ti ti-player-skip-back" aria-hidden="true" />
         </button>
 
         <div style={{ position: 'relative', width: 66, height: 66, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {/* Long-press progress ring */}
           {pressProgress > 0 && (
             <svg style={{ position: 'absolute', inset: -5, width: 76, height: 76, pointerEvents: 'none' }} viewBox="0 0 76 76">
               <circle cx="38" cy="38" r="35" fill="none" stroke="rgba(165,94,234,0.25)" strokeWidth="3" />
               <circle cx="38" cy="38" r="35" fill="none" stroke="#A55EEA" strokeWidth="3"
                 strokeDasharray={`${pressProgress * 2 * Math.PI * 35} ${2 * Math.PI * 35}`}
-                strokeLinecap="round"
-                transform="rotate(-90 38 38)"
-              />
+                strokeLinecap="round" transform="rotate(-90 38 38)" />
             </svg>
           )}
-          <button
-            className="play-btn"
+          <button className="play-btn"
             style={{ background: longPressing ? 'rgba(165,94,234,0.9)' : undefined }}
             onPointerDown={handlePointerDown}
             onPointerUp={handlePointerUp}
             onPointerLeave={() => setLongPressing(false)}
             disabled={!song.hasAudio}
-            aria-label={playing ? 'Pause' : 'Play — hold for random mode'}
-          >
+            aria-label={playing ? 'Pause' : 'Play — hold for random mode'}>
             <i className={`ti ${playing ? 'ti-player-pause' : 'ti-player-play'}`} aria-hidden="true" />
           </button>
         </div>
@@ -985,6 +1016,11 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
           <i className="ti ti-player-skip-forward" aria-hidden="true" />
         </button>
       </div>
+
+      {/* Keyboard shortcut hint — shown briefly on first open, fades away */}
+      <p style={{ textAlign: 'center', fontSize: 10, color: 'rgba(91,98,128,0.45)', padding: '0 0 8px', margin: 0 }}>
+        Space · Esc · ← → · M mute · R random · F fullscreen
+      </p>
     </div>
   );
 }
@@ -993,62 +1029,53 @@ function PlayerScreen({ song, settings, randomMode, nextUpSong, onBack, onSongEn
 // ── SETTINGS SCREEN ───────────────────────────────────────────────────────────
 function SettingsScreen({ settings, onSettingsChange }) {
   const hasSupabase = !!(SUPA_URL && SUPA_KEY);
-
   return (
     <div className="screen">
       <div className="page-header">
         <div><div className="page-title">Settings</div><div className="page-sub">App configuration</div></div>
       </div>
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-
         <div className={hasSupabase ? 'success-box' : 'warn-box'}>
           <p style={{ fontWeight: 700, margin: '0 0 4px' }}>
             <i className={`ti ${hasSupabase ? 'ti-check' : 'ti-alert-triangle'}`} aria-hidden="true" />
             {' '}Supabase — {hasSupabase ? 'connected' : 'not configured'}
           </p>
           <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>
-            {hasSupabase ? 'Songs and audio files are saved to the cloud and persist across devices.'
+            {hasSupabase ? 'Songs, instrumental and vocal stems saved to cloud. Deleted songs archived to deleted/ folder.'
               : 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.'}
           </p>
         </div>
-
         <div className="card">
           <span className="card-label">Guide vocals — default level</span>
           <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>
-            Default volume of the vocal guide when a song starts. 0 = silent (recommended — adjust per song in the player).
+            Starting volume when a song opens. 0 = silent. Adjust live in the player with the 🎤 button or M key.
           </p>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <i className="ti ti-microphone" style={{ fontSize: 18, color: settings.defaultGuideVolume > 0 ? 'var(--amber)' : 'var(--muted)' }} aria-hidden="true" />
-            <input
-              type="range" min="0" max="1" step="0.05"
+            <input type="range" min="0" max="1" step="0.05"
               value={settings.defaultGuideVolume ?? 0}
               onChange={e => onSettingsChange({ defaultGuideVolume: parseFloat(e.target.value) })}
-              style={{ flex: 1 }}
-              aria-label="Default guide vocals level"
-            />
+              style={{ flex: 1 }} aria-label="Default guide vocals level" />
             <span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>
               {settings.defaultGuideVolume > 0 ? `${Math.round((settings.defaultGuideVolume ?? 0) * 100)}%` : 'Off'}
             </span>
           </div>
         </div>
-
         <div className="card">
           <span className="card-label">After a song finishes</span>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
             {[
-              { value: false, label: 'Stop playing', sub: 'Player pauses at the end (default)' },
-              { value: true,  label: 'Play next random song', sub: 'Automatically picks a random song from your library' },
+              { value: false, label: 'Stop playing',           sub: 'Player pauses at the end (default)' },
+              { value: true,  label: 'Play next random song',  sub: 'Picks a random song automatically' },
             ].map(opt => (
               <label key={String(opt.value)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '4px 0' }}>
                 <div style={{
                   width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '2px solid',
                   borderColor: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'var(--border)',
-                  background: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent',
+                  background:  (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
-                  {(settings.autoPlayRandom ?? false) === opt.value && (
-                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />
-                  )}
+                  {(settings.autoPlayRandom ?? false) === opt.value && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />}
                 </div>
                 <div>
                   <p style={{ fontSize: 14, margin: 0 }}>{opt.label}</p>
@@ -1056,24 +1083,31 @@ function SettingsScreen({ settings, onSettingsChange }) {
                 </div>
                 <input type="radio" style={{ display: 'none' }}
                   checked={(settings.autoPlayRandom ?? false) === opt.value}
-                  onChange={() => onSettingsChange({ autoPlayRandom: opt.value })}
-                />
+                  onChange={() => onSettingsChange({ autoPlayRandom: opt.value })} />
               </label>
             ))}
           </div>
         </div>
-
+        <div className="card">
+          <span className="card-label">Keyboard shortcuts</span>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 13 }}>
+            {[['Space', 'Play / pause'], ['Esc', 'Close player'], ['←', 'Restart song (or prev if within 2s)'], ['→', 'Skip +10s (or next random)'], ['M', 'Toggle guide vocals mute'], ['R', 'Toggle random mode'], ['F', 'Fullscreen']].map(([k, v]) => (
+              <>
+                <span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span>
+                <span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span>
+              </>
+            ))}
+          </div>
+        </div>
         <div className="success-box">
           <p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Replicate — server-side</p>
-          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Demucs + Whisper run via <code>/api/replicate</code>. API key lives in Vercel env vars.</p>
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Demucs + Whisper via <code>/api/replicate</code>. API key in Vercel env vars.</p>
         </div>
-
         <div className="card">
           <span className="card-label">Roadmap</span>
           <p className="pin-note" style={{ marginBottom: 8 }}><i className="ti ti-pin" aria-hidden="true" /> v1.3 — Background image gallery per song</p>
           <p className="pin-note" style={{ marginBottom: 8 }}><i className="ti ti-pin" aria-hidden="true" /> v1.4 — Pitch / key shift + mic reverb</p>
-          <p className="pin-note" style={{ marginBottom: 8 }}><i className="ti ti-pin" aria-hidden="true" /> v1.5 — Queue / playlist mode</p>
-          <p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> v1.6 — Genius lyrics source</p>
+          <p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> v1.5 — Queue / playlist mode</p>
         </div>
       </div>
     </div>
@@ -1092,11 +1126,15 @@ export default function App() {
   const [nextUpSong, setNextUpSong] = useState(null);
   const [settings, setSettings]     = useState(() => ({ defaultGuideVolume: 0, autoPlayRandom: false, ...loadSettings() }));
 
+  // Ref-based flags — don't need to cause re-renders
+  const shouldAutoPlayRef = useRef(false); // true when next song should autoplay
+  const songHistoryRef    = useRef([]);    // stack of previously played songs for ← navigation
+
   useEffect(() => {
     loadLibrary().then(loaded => { setSongs(loaded); setLoading(false); });
   }, []);
 
-  // When active song changes in random mode, pre-pick the next one
+  // Pre-pick next song whenever active song changes in random mode
   useEffect(() => {
     if (randomMode && activeSong && songs.length > 1) {
       setNextUpSong(pickRandomSong(songs, activeSong.id));
@@ -1105,12 +1143,71 @@ export default function App() {
     }
   }, [randomMode, activeSong?.id, songs.length]);
 
+  // ── Navigation helpers ─────────────────────────────────────────────────────
+
+  // Navigate to a song that should autoplay (queued: random, auto-play, future queue)
+  function navigateToSong(song) {
+    if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong];
+    shouldAutoPlayRef.current = true;
+    setActiveSong(song);
+  }
+
+  // Navigate to a song that was manually selected — no autoplay, exits random mode
+  function handlePlaySong(song) {
+    if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong];
+    shouldAutoPlayRef.current = false;
+    if (randomMode) stopRandomMode();
+    setActiveSong(song);
+  }
+
+  // Go back to the previous song in history
+  function navigateToPrevious() {
+    const prev = songHistoryRef.current[songHistoryRef.current.length - 1];
+    if (!prev) return;
+    songHistoryRef.current = songHistoryRef.current.slice(0, -1);
+    shouldAutoPlayRef.current = true; // going back restores playback
+    setActiveSong(prev);
+  }
+
+  // ── Song end handler ───────────────────────────────────────────────────────
+  function handleSongEnd() {
+    if (randomMode) {
+      const next = nextUpSong || pickRandomSong(songs, activeSong?.id);
+      if (next) { navigateToSong(next); return; }
+    }
+    if (settings.autoPlayRandom && songs.length > 1) {
+      const next = pickRandomSong(songs, activeSong?.id);
+      if (next) { navigateToSong(next); return; }
+    }
+    shouldAutoPlayRef.current = false;
+  }
+
+  // ── Random mode ────────────────────────────────────────────────────────────
+  function startRandomMode() {
+    const first = pickRandomSong(songs, activeSong?.id);
+    if (!first) return;
+    setRandomMode(true);
+    navigateToSong(first);
+  }
+
+  function stopRandomMode() {
+    setRandomMode(false);
+    setNextUpSong(null);
+  }
+
+  function skipToNextRandom() {
+    const next = nextUpSong || pickRandomSong(songs, activeSong?.id);
+    if (next) navigateToSong(next);
+  }
+
+  // ── Settings ───────────────────────────────────────────────────────────────
   function handleSettingsChange(patch) {
     const updated = { ...settings, ...patch };
     setSettings(updated);
     persistSettings(updated);
   }
 
+  // ── Song management ────────────────────────────────────────────────────────
   async function handleAddSong(song) {
     const s = { ...song, addedAt: Date.now() };
     setSongs(prev => [s, ...prev]);
@@ -1124,54 +1221,24 @@ export default function App() {
     await saveSongData(updatedSong);
   }
 
-  async function handleDeleteSong(songId) {
-    setSongs(prev => prev.filter(s => s.id !== songId));
-    await deleteSongData(songId);
+  async function handleDeleteSong(song) {
+    setSongs(prev => prev.filter(s => s.id !== song.id));
+    await archiveDeletedSong(song); // archives JSON to deleted/ folder
   }
 
-  function handleSongEnd() {
-    if (randomMode) {
-      // Play the pre-selected next song
-      const next = nextUpSong || pickRandomSong(songs, activeSong?.id);
-      if (next) { setActiveSong(next); return; }
-    }
-    if (settings.autoPlayRandom && songs.length > 1) {
-      const next = pickRandomSong(songs, activeSong?.id);
-      if (next) { setActiveSong(next); return; }
-    }
-    // Default: stay on player (song ended, paused)
-  }
-
-  function startRandomMode() {
-    const first = pickRandomSong(songs, activeSong?.id);
-    if (!first) return;
-    setRandomMode(true);
-    setActiveSong(first);
-  }
-
-  function stopRandomMode() {
-    setRandomMode(false);
-    setNextUpSong(null);
-  }
-
-  function skipToNextRandom() {
-    const next = nextUpSong || pickRandomSong(songs, activeSong?.id);
-    if (next) setActiveSong(next);
-  }
-
-  // Editor — wide screen, no phone constraint
+  // ── Render ─────────────────────────────────────────────────────────────────
   if (editingSong) return (
     <div className="app-shell app-shell--wide">
       <EditorScreen song={editingSong} onSave={handleSaveEdited} onBack={() => setEditingSong(null)} />
     </div>
   );
 
-  // Player
   if (activeSong) return (
     <div className="app-shell">
       <PlayerScreen
         song={activeSong}
         settings={settings}
+        autoPlay={shouldAutoPlayRef.current}
         randomMode={randomMode}
         nextUpSong={nextUpSong}
         onBack={() => { stopRandomMode(); setActiveSong(null); }}
@@ -1179,6 +1246,7 @@ export default function App() {
         onStartRandom={startRandomMode}
         onStopRandom={stopRandomMode}
         onSkipRandom={skipToNextRandom}
+        onGoToPrevious={navigateToPrevious}
       />
     </div>
   );
@@ -1192,7 +1260,7 @@ export default function App() {
       )}
       {!loading && (
         <>
-          {tab === 'library'  && <LibraryScreen songs={songs} onPlay={setActiveSong} onEdit={setEditingSong} onDelete={handleDeleteSong} />}
+          {tab === 'library'  && <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} />}
           {tab === 'add'      && <AddSongScreen onSave={handleAddSong} />}
           {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} />}
           <nav className="bottom-nav">

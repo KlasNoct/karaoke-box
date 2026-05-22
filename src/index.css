@@ -664,3 +664,10 @@ textarea { resize: vertical; line-height: 1.7; }
 .play-btn {
   transition: background 0.2s, transform 0.1s, box-shadow 0.15s;
 }
+
+/* ── Extra-small badge for library cards ─────────────────────────────────────── */
+.badge-xs {
+  font-size: 9px !important;
+  padding: 1px 5px !important;
+  border-radius: 3px !important;
+}
