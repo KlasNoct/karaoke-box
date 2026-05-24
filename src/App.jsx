@@ -508,22 +508,28 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
           for (let i = 0; i < song.lyrics.length; i++) {
             if (song.lyrics[i].time <= t) idx = i; else break;
           }
-          // Advance rule: always show the next line 3 seconds before it starts,
-          // giving the singer time to read ahead.
-          // Exception: if the gap from the last word ending to the next line
-          // starting is less than 3 seconds, advance as soon as the last word
-          // ends (no point waiting, the lines are close together).
+          // Advance rule: show the next line early so the singer can read ahead.
+          // CRITICAL: only trigger AFTER the current line's words have finished.
+          // Without this guard, lines spaced ≤3s apart cascade — idx jumps
+          // multiple lines at once and everything runs ahead of the audio.
           if (idx >= 0 && idx < song.lyrics.length - 1) {
             const nextLineStart = song.lyrics[idx + 1].time;
             const words         = song.lyrics[idx].words;
             const lastWordEnd   = words?.length > 0 ? words[words.length - 1].end : null;
-            const tightGap      = lastWordEnd != null && (nextLineStart - lastWordEnd) < 3;
-            if (tightGap) {
-              // Lines are close: advance the moment the last word finishes
-              if (t >= lastWordEnd) idx++;
+
+            if (lastWordEnd != null) {
+              // Has word timestamps — only consider advancing after words are done
+              if (t >= lastWordEnd) {
+                const gapFromWordEnd = nextLineStart - lastWordEnd;
+                // Tight gap (<3s): advance immediately when words end
+                // Longer gap: advance 3s before next line starts
+                if (gapFromWordEnd < 3 || nextLineStart - t <= 3) idx++;
+              }
             } else {
-              // Normal: slide to the next line 3 seconds before it starts
-              if (nextLineStart - t <= 3) idx++;
+              // No word timestamps — advance 3s early, but only if the current
+              // line is longer than 3s (prevents cascading short consecutive lines)
+              const lineDuration = nextLineStart - song.lyrics[idx].time;
+              if (lineDuration > 3 && nextLineStart - t <= 3) idx++;
             }
           }
           setActiveLine(idx);

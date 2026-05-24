@@ -781,12 +781,18 @@ textarea { resize: vertical; line-height: 1.7; }
 /* ── Musical break info line ────────────────────────────────────────────────── */
 .lyric-break-info {
   font-style: italic;
-  font-size: clamp(12px, 1.4vw, 15px);
+  font-size: 24px;           /* matches .lyric-line.active on mobile */
   color: rgba(91, 98, 128, 0.45);
   text-align: center;
-  padding: 6px 0;
+  padding: 10px 0;           /* matches .lyric-line.active padding */
   letter-spacing: 0.04em;
   font-family: var(--font-ui);
   font-weight: 400;
   flex-shrink: 0;
+}
+
+@media (min-width: 768px) {
+  .lyric-break-info {
+    font-size: clamp(32px, 5.5vw, 62px); /* matches .lyric-line.active on desktop */
+  }
 }
