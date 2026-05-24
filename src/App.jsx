@@ -498,12 +498,46 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   const c          = songColor(song);
   const showNextUp = !!nextUpSong && duration > 0 && (duration - currentTime) <= 20 && (duration - currentTime) > 0;
 
-  function renderActiveLine(line) {
+  function renderActiveLine(line, nextLineTime) {
     if (!line) return '\u00A0';
     const lineColor = line.color || 'var(--amber)';
+
+    // ── Word-level colour wash — Whisper songs with per-word timestamps ──────
     if (line.words?.length > 0) {
-      return (<span>{line.words.map((w, i) => { let color; if (currentTime >= w.end) color = 'rgba(237,233,224,0.18)'; else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); else color = lineColor; return <span key={i} style={{ color, transition: 'color 0.06s' }}>{w.word}{i < line.words.length - 1 ? ' ' : ''}</span>; })}</span>);
+      return (
+        <span>
+          {line.words.map((w, i) => {
+            let color;
+            if (currentTime >= w.end)        color = 'rgba(237,233,224,0.18)';
+            else if (currentTime >= w.start) color = makePale(line.color || '#F4A827');
+            else                             color = lineColor;
+            return (
+              <span key={i} style={{ color, transition: 'color 0.06s' }}>
+                {w.word}{i < line.words.length - 1 ? ' ' : ''}
+              </span>
+            );
+          })}
+        </span>
+      );
     }
+
+    // ── Line-level wipe — LRClib / manual songs without word timestamps ──────
+    if (nextLineTime != null && nextLineTime > line.time) {
+      const pct = Math.min(100, Math.max(0,
+        Math.round(((currentTime - line.time) / (nextLineTime - line.time)) * 100)
+      ));
+      return (
+        <span style={{
+          background: `linear-gradient(90deg, ${lineColor} ${pct}%, rgba(237,233,224,0.35) ${pct}%)`,
+          WebkitBackgroundClip: 'text',
+          WebkitTextFillColor: 'transparent',
+          backgroundClip: 'text',
+        }}>
+          {line.text}
+        </span>
+      );
+    }
+
     return line.text;
   }
 
@@ -523,7 +557,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     <div className="lyrics-area">
       {lyrics.length === 0 && !song.plainLyrics && (<p style={{ color: 'var(--muted)', fontStyle: 'italic', fontSize: 15 }}>No lyrics added</p>)}
       {lyrics.length === 0 && song.plainLyrics && (<div style={{ overflowY: 'auto', maxHeight: 300, textAlign: 'center', fontSize: 14, lineHeight: 2.1, color: 'var(--muted)', width: '100%' }}>{song.plainLyrics.split('\n').map((ln, i) => (<div key={i} style={{ color: ln.trim() ? 'var(--text)' : 'transparent', minHeight: '1.5em' }}>{ln || '·'}</div>))}</div>)}
-      {lyrics.length > 0 && [-2,-1,0,1,2].map(off => { const line = lyrics[activeLine + off]; const isCur = off === 0; const lineColor = line?.color || 'var(--amber)'; const cls = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' }[String(off)]; return (<div key={off} className={`lyric-line ${cls}`} style={isCur ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{isCur ? renderActiveLine(line) : (line ? line.text : '\u00A0')}</div>); })}
+      {lyrics.length > 0 && [-2,-1,0,1,2].map(off => { const line = lyrics[activeLine + off]; const isCur = off === 0; const lineColor = line?.color || 'var(--amber)'; const cls = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' }[String(off)]; return (<div key={off} className={`lyric-line ${cls}`} style={isCur ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{isCur ? renderActiveLine(line, lyrics[activeLine + 1]?.time) : (line ? line.text : '\u00A0')}</div>); })}
     </div>
   );
 
