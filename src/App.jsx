@@ -498,42 +498,44 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   const c          = songColor(song);
   const showNextUp = !!nextUpSong && duration > 0 && (duration - currentTime) <= 20 && (duration - currentTime) > 0;
 
+  // For songs without word timestamps, distribute the line's duration
+  // evenly across its words — good enough for a smooth colour wash.
+  function estimateWordTimings(line, nextLineTime) {
+    if (!nextLineTime || nextLineTime <= line.time) return [];
+    const words = line.text.split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+    const dur = nextLineTime - line.time;
+    const each = dur / words.length;
+    return words.map((word, i) => ({
+      word,
+      start: line.time + i * each,
+      end:   line.time + (i + 1) * each,
+    }));
+  }
+
   function renderActiveLine(line, nextLineTime) {
     if (!line) return '\u00A0';
     const lineColor = line.color || 'var(--amber)';
 
-    // ── Word-level colour wash — Whisper songs with per-word timestamps ──────
-    if (line.words?.length > 0) {
+    // Use real word timestamps (Whisper) or estimate from line duration (LRClib / manual)
+    const words = line.words?.length > 0
+      ? line.words
+      : estimateWordTimings(line, nextLineTime);
+
+    if (words.length > 0) {
       return (
         <span>
-          {line.words.map((w, i) => {
+          {words.map((w, i) => {
             let color;
-            if (currentTime >= w.end)        color = 'rgba(237,233,224,0.18)';
-            else if (currentTime >= w.start) color = makePale(line.color || '#F4A827');
-            else                             color = lineColor;
+            if (currentTime >= w.end)        color = 'rgba(237,233,224,0.18)';        // sung — dim grey
+            else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); // singing — pale
+            else                             color = lineColor;                        // upcoming — full colour
             return (
-              <span key={i} style={{ color, transition: 'color 0.06s' }}>
-                {w.word}{i < line.words.length - 1 ? ' ' : ''}
+              <span key={i} style={{ color, transition: 'color 0.1s' }}>
+                {w.word}{i < words.length - 1 ? ' ' : ''}
               </span>
             );
           })}
-        </span>
-      );
-    }
-
-    // ── Line-level wipe — LRClib / manual songs without word timestamps ──────
-    if (nextLineTime != null && nextLineTime > line.time) {
-      const pct = Math.min(100, Math.max(0,
-        Math.round(((currentTime - line.time) / (nextLineTime - line.time)) * 100)
-      ));
-      return (
-        <span style={{
-          background: `linear-gradient(90deg, ${lineColor} ${pct}%, rgba(237,233,224,0.35) ${pct}%)`,
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          backgroundClip: 'text',
-        }}>
-          {line.text}
         </span>
       );
     }
