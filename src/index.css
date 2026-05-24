@@ -777,3 +777,16 @@ textarea { resize: vertical; line-height: 1.7; }
   0%, 100% { opacity: 0.2; transform: translateY(0); }
   50%       { opacity: 0.9; transform: translateY(-3px); }
 }
+
+/* ── Musical break info line ────────────────────────────────────────────────── */
+.lyric-break-info {
+  font-style: italic;
+  font-size: clamp(12px, 1.4vw, 15px);
+  color: rgba(91, 98, 128, 0.45);
+  text-align: center;
+  padding: 6px 0;
+  letter-spacing: 0.04em;
+  font-family: var(--font-ui);
+  font-weight: 400;
+  flex-shrink: 0;
+}

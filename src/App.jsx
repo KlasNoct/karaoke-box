@@ -499,7 +499,37 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         }
       });
       if (guide && guideVolume > 0) { guide.currentTime = main.currentTime; guide.play().catch(() => {}); }
-      const tick = () => { const t = main.currentTime; setCurrentTime(t); if (song.lyrics?.length > 0) { let idx = -1; for (let i = 0; i < song.lyrics.length; i++) { if (song.lyrics[i].time <= t) idx = i; else break; } setActiveLine(idx); } rafRef.current = requestAnimationFrame(tick); };
+      const tick = () => {
+        const t = main.currentTime;
+        setCurrentTime(t);
+        if (song.lyrics?.length > 0) {
+          // Find the highest line whose start time has passed
+          let idx = -1;
+          for (let i = 0; i < song.lyrics.length; i++) {
+            if (song.lyrics[i].time <= t) idx = i; else break;
+          }
+          // Advance rule: always show the next line 3 seconds before it starts,
+          // giving the singer time to read ahead.
+          // Exception: if the gap from the last word ending to the next line
+          // starting is less than 3 seconds, advance as soon as the last word
+          // ends (no point waiting, the lines are close together).
+          if (idx >= 0 && idx < song.lyrics.length - 1) {
+            const nextLineStart = song.lyrics[idx + 1].time;
+            const words         = song.lyrics[idx].words;
+            const lastWordEnd   = words?.length > 0 ? words[words.length - 1].end : null;
+            const tightGap      = lastWordEnd != null && (nextLineStart - lastWordEnd) < 3;
+            if (tightGap) {
+              // Lines are close: advance the moment the last word finishes
+              if (t >= lastWordEnd) idx++;
+            } else {
+              // Normal: slide to the next line 3 seconds before it starts
+              if (nextLineStart - t <= 3) idx++;
+            }
+          }
+          setActiveLine(idx);
+        }
+        rafRef.current = requestAnimationFrame(tick);
+      };
       rafRef.current = requestAnimationFrame(tick);
     } else { main.pause(); guide?.pause(); cancelAnimationFrame(rafRef.current); }
     return () => cancelAnimationFrame(rafRef.current);
@@ -605,31 +635,50 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
       {lyrics.length === 0 && !song.plainLyrics && (<p style={{ color: 'var(--muted)', fontStyle: 'italic', fontSize: 15 }}>No lyrics added</p>)}
       {lyrics.length === 0 && song.plainLyrics && (<div style={{ overflowY: 'auto', maxHeight: 300, textAlign: 'center', fontSize: 14, lineHeight: 2.1, color: 'var(--muted)', width: '100%' }}>{song.plainLyrics.split('\n').map((ln, i) => (<div key={i} style={{ color: ln.trim() ? 'var(--text)' : 'transparent', minHeight: '1.5em' }}>{ln || '·'}</div>))}</div>)}
       {lyrics.length > 0 && (() => {
-        const nextLine    = lyrics[activeLine + 1];
-        const timeToNext  = nextLine ? nextLine.time - currentTime : null;
+        const nextLine      = lyrics[activeLine + 1];
+        const timeToNext    = nextLine ? nextLine.time - currentTime : null;
         const timeSinceLine = currentTime - (lyrics[activeLine]?.time ?? 0);
-        const inBreak = activeLine >= 0 && timeToNext !== null && timeToNext > 5.0 && timeSinceLine > 1.5;
-        return [-2,-1,0,1,2].map(off => {
-          const line      = lyrics[activeLine + off];
-          const isCur     = off === 0;
-          const lineColor = line?.color || 'var(--amber)';
-          // During a musical break: replace the active slot with a countdown
-          if (isCur && inBreak) {
-            return (
-              <div key={off} className="lyric-line active" style={{ color: 'rgba(91,98,128,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-                <span className="break-dots"><span>•</span><span>•</span><span>•</span></span>
-                {timeToNext > 5 && <span style={{ fontSize: '0.5em', letterSpacing: '0.02em' }}>{Math.ceil(timeToNext)}s</span>}
+        // A "musical break" is a gap >=20s between lines.
+        // We detect it once we're 2s past the current line AND >=20s from the next.
+        const inBreak       = activeLine >= 0 && timeToNext !== null
+                              && timeToNext > 20.0 && timeSinceLine > 2.0;
+        // Static break duration shown in the info label (doesn't count down)
+        const breakDuration = inBreak
+          ? Math.round(nextLine.time - (lyrics[activeLine]?.time ?? nextLine.time))
+          : 0;
+        const classMap = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' };
+
+        return (
+          <>
+            {[-2,-1,0].map(off => {
+              const line      = lyrics[activeLine + off];
+              const isCur     = off === 0;
+              const lineColor = line?.color || 'var(--amber)';
+              // During a break the last-sung line dims to 'past' — it's already done
+              const cls = (isCur && inBreak) ? 'past' : classMap[String(off)];
+              return (
+                <div key={off} className={`lyric-line ${cls}`}
+                  style={(isCur && !inBreak) ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>
+                  {isCur ? renderActiveLine(line, lyrics[activeLine + 1]?.time) : (line ? line.text : '\u00A0')}
+                </div>
+              );
+            })}
+            {inBreak && (
+              <div className="lyric-break-info">
+                Musical break — {breakDuration}s
               </div>
-            );
-          }
-          const cls = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' }[String(off)];
-          return (
-            <div key={off} className={`lyric-line ${cls}`}
-              style={isCur ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>
-              {isCur ? renderActiveLine(line, lyrics[activeLine + 1]?.time) : (line ? line.text : '\u00A0')}
-            </div>
-          );
-        });
+            )}
+            {[1,2].map(off => {
+              const line = lyrics[activeLine + off];
+              const cls  = classMap[String(off)];
+              return (
+                <div key={off} className={`lyric-line ${cls}`}>
+                  {line ? line.text : '\u00A0'}
+                </div>
+              );
+            })}
+          </>
+        );
       })()}
     </div>
   );
