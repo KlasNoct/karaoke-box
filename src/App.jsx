@@ -581,39 +581,25 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
 
   // For songs without word timestamps, distribute the line's duration
   // evenly across its words — good enough for a smooth colour wash.
-  function estimateWordTimings(line, nextLineTime) {
-    if (!nextLineTime || nextLineTime <= line.time) return [];
-    const words = line.text.split(/\s+/).filter(Boolean);
-    if (!words.length) return [];
-    const dur = nextLineTime - line.time;
-    const each = dur / words.length;
-    return words.map((word, i) => ({
-      word,
-      start: line.time + i * each,
-      end:   line.time + (i + 1) * each,
-    }));
-  }
-
-  function renderActiveLine(line, nextLineTime) {
+  // Colour wash: word-by-word for Whisper-processed songs (real timestamps),
+  // plain text for everything else. No estimation — fake timing causes more
+  // confusion than it solves.
+  function renderActiveLine(line) {
     if (!line) return '\u00A0';
     const lineColor = line.color || 'var(--amber)';
 
-    // Use real word timestamps (Whisper) or estimate from line duration (LRClib / manual)
-    const words = line.words?.length > 0
-      ? line.words
-      : estimateWordTimings(line, nextLineTime);
-
-    if (words.length > 0) {
+    if (line.words?.length > 0) {
+      // Real word timestamps from Whisper — colour wash each word
       return (
         <span>
-          {words.map((w, i) => {
+          {line.words.map((w, i) => {
             let color;
-            if (currentTime >= w.end)        color = 'rgba(237,233,224,0.18)';        // sung — dim grey
-            else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); // singing — pale
-            else                             color = lineColor;                        // upcoming — full colour
+            if (currentTime >= w.end)        color = 'rgba(237,233,224,0.18)';          // sung — dim
+            else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); // active — pale
+            else                             color = lineColor;                          // upcoming — full
             return (
               <span key={i} style={{ color, transition: 'color 0.1s' }}>
-                {w.word}{i < words.length - 1 ? ' ' : ''}
+                {w.word}{i < line.words.length - 1 ? ' ' : ''}
               </span>
             );
           })}
@@ -621,6 +607,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
       );
     }
 
+    // No word timestamps — show line text in its colour, no word animation
     return line.text;
   }
 
@@ -641,17 +628,29 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
       {lyrics.length === 0 && !song.plainLyrics && (<p style={{ color: 'var(--muted)', fontStyle: 'italic', fontSize: 15 }}>No lyrics added</p>)}
       {lyrics.length === 0 && song.plainLyrics && (<div style={{ overflowY: 'auto', maxHeight: 300, textAlign: 'center', fontSize: 14, lineHeight: 2.1, color: 'var(--muted)', width: '100%' }}>{song.plainLyrics.split('\n').map((ln, i) => (<div key={i} style={{ color: ln.trim() ? 'var(--text)' : 'transparent', minHeight: '1.5em' }}>{ln || '·'}</div>))}</div>)}
       {lyrics.length > 0 && (() => {
+        const currentLine   = lyrics[activeLine];
         const nextLine      = lyrics[activeLine + 1];
         const timeToNext    = nextLine ? nextLine.time - currentTime : null;
-        const timeSinceLine = currentTime - (lyrics[activeLine]?.time ?? 0);
-        // A "musical break" is a gap >=20s between lines.
-        // We detect it once we're 2s past the current line AND >=20s from the next.
-        const inBreak       = activeLine >= 0 && timeToNext !== null
-                              && timeToNext > 20.0 && timeSinceLine > 2.0;
-        // Static break duration shown in the info label (doesn't count down)
-        const breakDuration = inBreak
-          ? Math.round(nextLine.time - (lyrics[activeLine]?.time ?? nextLine.time))
-          : 0;
+
+        // Break duration = from end of singing (last word end, or line start as fallback)
+        // to start of next line. This is stable — doesn't change as time passes.
+        const lastWordEnd   = currentLine?.words?.length > 0
+          ? currentLine.words[currentLine.words.length - 1].end
+          : null;
+        const singEnd       = lastWordEnd ?? currentLine?.time ?? 0;
+        const totalBreak    = nextLine ? nextLine.time - singEnd : 0;
+
+        // Show break info when:
+        //   - Total break is ≥20s (a real musical break, not just a pause between lines)
+        //   - We're past the end of singing
+        //   - We're not yet in the 3-second preview window (which advances the line)
+        const pastSinging   = lastWordEnd ? currentTime >= lastWordEnd
+                                          : (currentTime - (currentLine?.time ?? 0)) >= 2;
+        const inBreak       = activeLine >= 0 && nextLine !== undefined
+                              && totalBreak >= 20
+                              && pastSinging
+                              && timeToNext !== null && timeToNext > 3;
+        const breakDuration = inBreak ? Math.round(totalBreak) : 0;
         const classMap = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' };
 
         return (
@@ -665,7 +664,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
               return (
                 <div key={off} className={`lyric-line ${cls}`}
                   style={(isCur && !inBreak) ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>
-                  {isCur ? renderActiveLine(line, lyrics[activeLine + 1]?.time) : (line ? line.text : '\u00A0')}
+                  {isCur ? renderActiveLine(line) : (line ? line.text : '\u00A0')}
                 </div>
               );
             })}
