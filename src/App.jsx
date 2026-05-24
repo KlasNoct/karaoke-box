@@ -161,6 +161,27 @@ function getVocals(out) {
   return out.vocals || null;
 }
 
+// Merges LRClib line structure with Whisper word timestamps.
+// Each LRClib line gets the Whisper words that fall within its time window.
+function mergeWordsIntoLines(lrcLines, whisperOut) {
+  if (!lrcLines?.length || !whisperOut) return lrcLines;
+  // Collect all word objects from Whisper segments
+  const allWords = [];
+  for (const seg of (whisperOut.segments || [])) {
+    for (const w of (seg.words || [])) {
+      allWords.push({ word: w.word.replace(/^\s+/, ''), start: w.start, end: w.end });
+    }
+  }
+  if (!allWords.length) return lrcLines; // Whisper had no word data — return lines as-is
+  // Assign each word to the line whose time window it falls within
+  return lrcLines.map((line, i) => {
+    const lineStart = line.time;
+    const lineEnd   = lrcLines[i + 1]?.time ?? Infinity;
+    const words     = allWords.filter(w => w.start >= lineStart - 0.4 && w.start < lineEnd);
+    return { ...line, words };
+  });
+}
+
 function makePale(hex) {
   if (!hex || !hex.startsWith('#') || hex.length < 7) return 'rgba(255,255,255,0.38)';
   const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
@@ -324,13 +345,21 @@ function AddSongScreen({ onSave }) {
       originalUrl = await uploadAudioToSupabase(origFile);
       if (cancelRef.current.aborted) return;
       const lrcResult = title.trim() ? await lrcSearch(artist, title) : null;
-      const skipWhisper = lrcResult?.synced?.length > 0;
+      // Always run Whisper for word-level timestamps.
+      // Pass LRClib lyrics as initial_prompt so Whisper aligns to known words.
+      const whisperPrompt = lrcResult?.plain || null;
+      const hadLrc = !!(lrcResult?.synced?.length > 0);
       setStage('processing');
-      setDemucsState(p => ({ ...p, status: 'running' })); setWhisperState(p => ({ ...p, status: skipWhisper ? 'skipped_lrc' : 'running' }));
-      startTick('demucs', setDemucsState); if (!skipWhisper) startTick('whisper', setWhisperState);
+      setDemucsState(p => ({ ...p, status: 'running' }));
+      setWhisperState(p => ({ ...p, status: 'running' }));
+      startTick('demucs', setDemucsState);
+      startTick('whisper', setWhisperState);
       const demucsId = await repCreate(DEMUCS_VERSION, { audio: originalUrl, model_name: 'htdemucs', stem: 'vocals', shifts: 1, overlap: 0.25, output_format: 'mp3' });
       await sleep(12000);
-      const whisperPredId = skipWhisper ? null : await repCreate(WHISPER_VERSION, { audio: originalUrl, word_timestamps: true, temperature: 0 });
+      const whisperPredId = await repCreate(WHISPER_VERSION, {
+        audio: originalUrl, word_timestamps: true, temperature: 0,
+        ...(whisperPrompt ? { initial_prompt: whisperPrompt } : {}),
+      });
       if (cancelRef.current.aborted) return;
       let instrumentalUrl = null, vocalsUrl = null, lyrics = [], lyricsType = 'none', demucsErr = null, whisperErr = null;
       await Promise.allSettled([
@@ -341,12 +370,28 @@ function AddSongScreen({ onSave }) {
           if (vr) vocalsUrl = await uploadProcessedToSupabase(vr, 'vocals');
           if (originalUrl) await deleteSupabaseFile(originalUrl);
         }).catch(e => { stopTick('demucs'); demucsErr = e.message; setDemucsState(p => ({ ...p, status: 'error' })); }),
-        whisperPredId
-          ? repPoll(whisperPredId, (st, el) => { if (!cancelRef.current.aborted) setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); }, cancelRef.current).then(out => { stopTick('whisper'); setWhisperState(p => ({ ...p, status: 'done' })); lyrics = whisperToLines(out); lyricsType = 'synced'; }).catch(e => { stopTick('whisper'); whisperErr = e.message; setWhisperState(p => ({ ...p, status: 'error' })); })
-          : Promise.resolve().then(() => { lyrics = lrcResult.synced.length > 0 ? lrcResult.synced : lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] })); lyricsType = lrcResult.synced.length > 0 ? 'synced' : 'plain'; }),
+        repPoll(whisperPredId, (st, el) => { if (!cancelRef.current.aborted) setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); }, cancelRef.current).then(out => {
+          stopTick('whisper'); setWhisperState(p => ({ ...p, status: 'done' }));
+          // Merge LRClib line structure + Whisper word timestamps (best of both)
+          if (hadLrc && lrcResult?.synced?.length > 0) {
+            lyrics = mergeWordsIntoLines(lrcResult.synced, out);
+          } else {
+            lyrics = whisperToLines(out);
+          }
+          lyricsType = 'synced';
+        }).catch(e => {
+          stopTick('whisper'); whisperErr = e.message; setWhisperState(p => ({ ...p, status: 'error' }));
+          // Whisper failed — fall back to LRClib if we have it
+          if (hadLrc && lrcResult?.synced?.length > 0) {
+            lyrics = lrcResult.synced; lyricsType = 'synced';
+          } else if (lrcResult?.plain) {
+            lyrics = lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] }));
+            lyricsType = 'plain';
+          }
+        }),
       ]);
       if (cancelRef.current.aborted) return;
-      setResult({ instrumentalUrl, vocalsUrl, lyrics, lyricsType, demucsErr, whisperErr, skippedWhisper: skipWhisper }); setStage('review');
+      setResult({ instrumentalUrl, vocalsUrl, lyrics, lyricsType, demucsErr, whisperErr, hadLrc }); setStage('review');
     } catch (e) { Object.values(timers.current).forEach(clearInterval); setErrorMsg(e.message); setStage('error'); }
   }
 
@@ -362,9 +407,9 @@ function AddSongScreen({ onSave }) {
   if (stage === 'processing') {
     const steps = [
       { key: 'demucs', icon: 'ti-scissors', label: 'Separating vocals', sub: 'Demucs — saves instrumental + vocal stem', ...demucsState },
-      { key: 'whisper', icon: 'ti-text-recognition', label: whisperState.status === 'skipped_lrc' ? 'Lyrics from LRClib' : 'Transcribing lyrics', sub: whisperState.status === 'skipped_lrc' ? 'Synced lyrics found — Whisper skipped ✓' : 'Whisper — word-level timestamps', ...whisperState },
+      { key: 'whisper', icon: 'ti-text-recognition', label: 'Word timing', sub: 'Whisper aligns each word to audio — merges with LRClib line structure if available', ...whisperState },
     ];
-    return (<div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}><p style={{ fontWeight: 700, fontSize: 17, marginBottom: 2 }}>Processing "{title}"…</p><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Both steps run in parallel. Usually 2–5 minutes.</p>{steps.map(step => (<div key={step.key} className="step-row"><i className={`ti ${step.icon}${step.status === 'running' ? ' spin' : ''}`} style={{ color: step.status === 'done' || step.status === 'skipped_lrc' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }} aria-hidden="true" /><div className="step-info"><div className="step-title">{step.label}</div><div className="step-sub">{step.sub}</div></div><div className="step-status" style={{ color: step.status === 'done' || step.status === 'skipped_lrc' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }}>{step.status === 'done' || step.status === 'skipped_lrc' ? '✓ Done' : step.status === 'error' ? 'Failed' : step.status === 'running' ? fmt(step.elapsed) : '…'}</div></div>))}<button className="btn btn-secondary" onClick={() => { cancelRef.current.aborted = true; setStage('idle'); }}><i className="ti ti-x" aria-hidden="true" /> Cancel</button></div>);
+    return (<div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}><p style={{ fontWeight: 700, fontSize: 17, marginBottom: 2 }}>Processing "{title}"…</p><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Both steps run in parallel. Usually 2–5 minutes.</p>{steps.map(step => (<div key={step.key} className="step-row"><i className={`ti ${step.icon}${step.status === 'running' ? ' spin' : ''}`} style={{ color: step.status === 'done' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }} aria-hidden="true" /><div className="step-info"><div className="step-title">{step.label}</div><div className="step-sub">{step.sub}</div></div><div className="step-status" style={{ color: step.status === 'done' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }}>{step.status === 'done' ? '✓ Done' : step.status === 'error' ? 'Failed' : step.status === 'running' ? fmt(step.elapsed) : '…'}</div></div>))}<button className="btn btn-secondary" onClick={() => { cancelRef.current.aborted = true; setStage('idle'); }}><i className="ti ti-x" aria-hidden="true" /> Cancel</button></div>);
   }
 
   if (stage === 'review' && result) return (
@@ -373,7 +418,7 @@ function AddSongScreen({ onSave }) {
       <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className={`ti ${result.instrumentalUrl ? 'ti-check' : 'ti-alert-triangle'}`} style={{ fontSize: 20, color: result.instrumentalUrl ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" /><div><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.instrumentalUrl ? 'Karaoke track saved' : 'Vocal separation failed'}</p>{result.vocalsUrl && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>Vocal stem saved — guide vocals available</p>}{result.demucsErr && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>{result.demucsErr}</p>}</div></div>
         <div className="divider" style={{ margin: 0 }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className={`ti ${result.lyrics.length > 0 ? 'ti-check' : 'ti-alert-triangle'}`} style={{ fontSize: 20, color: result.lyrics.length > 0 ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" /><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.lyrics.length > 0 ? `${result.lyrics.length} lines${result.skippedWhisper ? ' (LRClib)' : ' (Whisper + word timing)'}` : 'No lyrics extracted'}</p></div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className={`ti ${result.lyrics.length > 0 ? 'ti-check' : 'ti-alert-triangle'}`} style={{ fontSize: 20, color: result.lyrics.length > 0 ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" /><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.lyrics.length > 0 ? `${result.lyrics.length} lines${result.hadLrc ? ' (LRClib lines + Whisper words)' : ' (Whisper)'}` : 'No lyrics extracted'}</p></div>
       </div>
       {result.lyrics.length > 0 && (<div className="card" style={{ padding: '12px 14px' }}><span className="card-label">Lyrics preview</span><div style={{ maxHeight: 170, overflowY: 'auto' }}>{result.lyrics.slice(0, 10).map((l, i) => (<div key={i} style={{ display: 'flex', gap: 10, borderBottom: '1px solid var(--border)', padding: '3px 0', fontSize: 13 }}><span style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>{fmt(l.time)}</span><span>{l.text}</span></div>))}{result.lyrics.length > 10 && <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>…and {result.lyrics.length - 10} more lines</p>}</div></div>)}
       {!result.lyrics.length && (<div className="card"><span className="card-label">Paste lyrics manually</span><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder="Paste lyrics here…" rows={6} /></div>)}
@@ -388,7 +433,7 @@ function AddSongScreen({ onSave }) {
     <div className="screen" style={{ padding: '8px 18px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div className="mode-tabs">{['auto', 'manual'].map(m => (<button key={m} className={`mode-tab${mode === m ? ' active' : ''}`} onClick={() => setMode(m)}><i className={`ti ${m === 'auto' ? 'ti-sparkles' : 'ti-upload'}`} aria-hidden="true" style={{ marginRight: 5, fontSize: 13 }} />{m === 'auto' ? 'Auto · Replicate' : 'Manual'}</button>))}</div>
       <div className="card"><span className="card-label">Song details</span><div className="field"><input placeholder="Song title *" value={title} onChange={e => setTitle(e.target.value)} /></div><div className="field"><input placeholder="Artist name" value={artist} onChange={e => setArtist(e.target.value)} /></div></div>
-      {mode === 'auto' && (<><div className="card"><span className="card-label">Upload original song</span><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Demucs separates vocal stem + instrumental (both saved permanently). Whisper transcribes with word timing. Original deleted after.</p><label className={`upload-zone${origFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} /><i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}</label></div><div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first — if synced lyrics found, Whisper is skipped.</div><button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}><i className="ti ti-sparkles" aria-hidden="true" /> Process with Replicate</button></>)}
+      {mode === 'auto' && (<><div className="card"><span className="card-label">Upload original song</span><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Demucs separates vocal stem + instrumental (both saved permanently). Whisper transcribes with word timing. Original deleted after.</p><label className={`upload-zone${origFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} /><i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}</label></div><div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first for line structure. Whisper always runs for word-level timing.</div><button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}><i className="ti ti-sparkles" aria-hidden="true" /> Process with Replicate</button></>)}
       {mode === 'manual' && (<><div className="card"><span className="card-label">Lyrics</span><button className="btn btn-secondary btn-full" style={{ marginBottom: 12 }} onClick={async () => { if (!title.trim()) return; const res = await lrcSearch(artist, title); if (res?.plain) setLyricsText(res.plain); else alert('Not found on LRClib. Paste manually or use Auto mode.'); }}><i className="ti ti-search" aria-hidden="true" /> Search LRClib</button><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder={"Paste lyrics here…\n\nOr LRC format:\n[00:12.34]First line"} rows={7} /></div><div className="card"><span className="card-label">Instrumental track</span><label className={`upload-zone${instrFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setInstrFile(e.target.files[0])} /><i className={`ti ${instrFile ? 'ti-check' : 'ti-music'}`} style={{ color: instrFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{instrFile ? <p className="filename">{instrFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Upload karaoke / instrumental</p><p>MP3, WAV, M4A</p></>}</label></div><button className="btn btn-primary btn-full" onClick={handleSave} disabled={!title.trim()}><i className="ti ti-plus" aria-hidden="true" /> Add to library</button></>)}
     </div>
   );
@@ -559,7 +604,33 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     <div className="lyrics-area">
       {lyrics.length === 0 && !song.plainLyrics && (<p style={{ color: 'var(--muted)', fontStyle: 'italic', fontSize: 15 }}>No lyrics added</p>)}
       {lyrics.length === 0 && song.plainLyrics && (<div style={{ overflowY: 'auto', maxHeight: 300, textAlign: 'center', fontSize: 14, lineHeight: 2.1, color: 'var(--muted)', width: '100%' }}>{song.plainLyrics.split('\n').map((ln, i) => (<div key={i} style={{ color: ln.trim() ? 'var(--text)' : 'transparent', minHeight: '1.5em' }}>{ln || '·'}</div>))}</div>)}
-      {lyrics.length > 0 && [-2,-1,0,1,2].map(off => { const line = lyrics[activeLine + off]; const isCur = off === 0; const lineColor = line?.color || 'var(--amber)'; const cls = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' }[String(off)]; return (<div key={off} className={`lyric-line ${cls}`} style={isCur ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{isCur ? renderActiveLine(line, lyrics[activeLine + 1]?.time) : (line ? line.text : '\u00A0')}</div>); })}
+      {lyrics.length > 0 && (() => {
+        const nextLine    = lyrics[activeLine + 1];
+        const timeToNext  = nextLine ? nextLine.time - currentTime : null;
+        const timeSinceLine = currentTime - (lyrics[activeLine]?.time ?? 0);
+        const inBreak = activeLine >= 0 && timeToNext !== null && timeToNext > 5.0 && timeSinceLine > 1.5;
+        return [-2,-1,0,1,2].map(off => {
+          const line      = lyrics[activeLine + off];
+          const isCur     = off === 0;
+          const lineColor = line?.color || 'var(--amber)';
+          // During a musical break: replace the active slot with a countdown
+          if (isCur && inBreak) {
+            return (
+              <div key={off} className="lyric-line active" style={{ color: 'rgba(91,98,128,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+                <span className="break-dots"><span>•</span><span>•</span><span>•</span></span>
+                {timeToNext > 5 && <span style={{ fontSize: '0.5em', letterSpacing: '0.02em' }}>{Math.ceil(timeToNext)}s</span>}
+              </div>
+            );
+          }
+          const cls = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' }[String(off)];
+          return (
+            <div key={off} className={`lyric-line ${cls}`}
+              style={isCur ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>
+              {isCur ? renderActiveLine(line, lyrics[activeLine + 1]?.time) : (line ? line.text : '\u00A0')}
+            </div>
+          );
+        });
+      })()}
     </div>
   );
 
