@@ -174,14 +174,38 @@ async function lrcSearch(artist, title) {
   } catch { return null; }
 }
 
+// Split a word array into chunks of ≤MAX_WORDS_PER_LINE, breaking at the
+// largest natural pause so line breaks feel like the singer intended them.
+const MAX_WORDS_PER_LINE = 10;
+function splitSegmentWords(words) {
+  if (!words.length) return [];
+  if (words.length <= MAX_WORDS_PER_LINE) return [words];
+  let bestIdx = Math.ceil(words.length / 2), bestGap = -1;
+  for (let i = 1; i < words.length; i++) {
+    const gap = words[i].start - words[i - 1].end;
+    if (gap > bestGap) { bestGap = gap; bestIdx = i; }
+  }
+  return [...splitSegmentWords(words.slice(0, bestIdx)), ...splitSegmentWords(words.slice(bestIdx))];
+}
+
 function whisperToLines(out) {
   if (!out) return [];
   const segs = out.segments || [];
   if (segs.length > 0) {
-    return segs.map(s => ({
-      id: uid(), time: s.start, text: s.text.trim(), color: null,
-      words: (s.words || []).map(w => ({ word: w.word.replace(/^\s+/, ''), start: w.start, end: w.end })),
-    })).filter(l => l.text);
+    const lines = [];
+    for (const seg of segs) {
+      const words = (seg.words || []).map(w => ({ word: w.word.replace(/^\s+/, ''), start: w.start, end: w.end }));
+      if (words.length > 0) {
+        // Split long segments at natural pauses so each line stays readable
+        for (const chunk of splitSegmentWords(words)) {
+          lines.push({ id: uid(), time: chunk[0].start, text: chunk.map(w => w.word).join(' '), color: null, words: chunk });
+        }
+      } else if (seg.text.trim()) {
+        // No word-level data — keep as single line, can't split without timing
+        lines.push({ id: uid(), time: seg.start, text: seg.text.trim(), color: null, words: [] });
+      }
+    }
+    return lines;
   }
   const text = out.transcription || out.text || (typeof out === 'string' ? out : '');
   return text.split(/\n+/).filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t.trim(), color: null, words: [] }));
@@ -263,7 +287,8 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
         {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
         {filtered.length === 0 && songs.length > 0 && (<p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>No results for "{q}"</p>)}
         {filtered.map(song => {
-          const hasWords = song.lyrics?.some(l => l.words?.length > 0);
+          const activeLyrics = (song.lyricsSource === 'alt' && song.lyricsAlt?.length > 0) ? song.lyricsAlt : song.lyrics;
+          const hasWords = activeLyrics?.some(l => l.words?.length > 0);
           return (
             <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onPlay(song)}>
               <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
@@ -317,11 +342,11 @@ function EditorScreen({ song, onSave, onBack }) {
     setSaving(true);
     const sorted = [...lines].sort((a, b) => a.time - b.time);
     if (editingAlt) {
-      // Saving the WhisperX backup — preserve primary lyrics unchanged
-      await onSave({ ...song, lyricsAlt: sorted });
+      // Saving WhisperX backup — mark this as the preferred source
+      await onSave({ ...song, lyricsAlt: sorted, lyricsSource: 'alt' });
     } else {
-      // Saving the primary (AI-corrected) lyrics
-      await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none' });
+      // Saving AI-corrected primary — mark as preferred source
+      await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none', lyricsSource: 'primary' });
     }
     setSaving(false);
   }
@@ -487,9 +512,11 @@ function AddSongScreen({ onSave }) {
             const cWords = lyrics.reduce((n, l) => n + (l.words?.length || 0), 0);
             console.log(`[KaraKlas] Claude: ${lyrics.length} lines, ${cWords} words`);
           } else {
-            // Claude failed — fall back to raw WhisperX
-            lyrics = lyricsAlt;
-            lyricsType = lyricsAlt.length > 0 ? 'synced' : 'none';
+            // Claude failed — use mergeWordsIntoLines as fallback: keeps LRC line
+            // structure (correct line breaks) with WhisperX word timing where possible.
+            // Better than raw WhisperX which creates very long segments.
+            lyrics = mergeWordsIntoLines(lrcResult.synced, out);
+            lyricsType = lyrics.length > 0 ? 'synced' : 'none';
             setClaudeState({ status: 'error' });
           }
         } else {
@@ -547,6 +574,7 @@ function AddSongScreen({ onSave }) {
       lyrics: finalLyrics,
       lyricsAlt: r.lyricsAlt?.length > 0 ? r.lyricsAlt : [],
       lyricsType: r.lyrics?.length > 0 ? r.lyricsType : finalLyrics.length > 0 ? 'plain' : 'none',
+      lyricsSource: 'primary',
       plainLyrics: lyricsText,
     });
   }
@@ -726,7 +754,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   function handleRestart() { if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); } if (guideRef.current) guideRef.current.currentTime = 0; }
   function handleSkip() { if (randomMode) { onSkipRandom?.(); return; } if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); } }
 
-  const lyrics   = song.lyrics || [];
+  // Respect the source preference saved from the editor
+  const lyrics   = (song.lyricsSource === 'alt' && song.lyricsAlt?.length > 0)
+    ? song.lyricsAlt
+    : (song.lyrics || []);
   const hasWords = lyrics.some(l => l.words?.length > 0);
   const pct      = duration > 0 ? (currentTime / duration) * 100 : 0;
   const c        = songColor(song);
