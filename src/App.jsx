@@ -503,34 +503,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         const t = main.currentTime;
         setCurrentTime(t);
         if (song.lyrics?.length > 0) {
-          // Find the highest line whose start time has passed
+          // Active line = last line whose start time has passed
           let idx = -1;
           for (let i = 0; i < song.lyrics.length; i++) {
             if (song.lyrics[i].time <= t) idx = i; else break;
-          }
-          // Advance rule: show the next line early so the singer can read ahead.
-          // CRITICAL: only trigger AFTER the current line's words have finished.
-          // Without this guard, lines spaced ≤3s apart cascade — idx jumps
-          // multiple lines at once and everything runs ahead of the audio.
-          if (idx >= 0 && idx < song.lyrics.length - 1) {
-            const nextLineStart = song.lyrics[idx + 1].time;
-            const words         = song.lyrics[idx].words;
-            const lastWordEnd   = words?.length > 0 ? words[words.length - 1].end : null;
-
-            if (lastWordEnd != null) {
-              // Has word timestamps — only consider advancing after words are done
-              if (t >= lastWordEnd) {
-                const gapFromWordEnd = nextLineStart - lastWordEnd;
-                // Tight gap (<3s): advance immediately when words end
-                // Longer gap: advance 3s before next line starts
-                if (gapFromWordEnd < 3 || nextLineStart - t <= 3) idx++;
-              }
-            } else {
-              // No word timestamps — advance 3s early, but only if the current
-              // line is longer than 3s (prevents cascading short consecutive lines)
-              const lineDuration = nextLineStart - song.lyrics[idx].time;
-              if (lineDuration > 3 && nextLineStart - t <= 3) idx++;
-            }
           }
           setActiveLine(idx);
         }
@@ -643,13 +619,13 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         // Show break info when:
         //   - Total break is ≥20s (a real musical break, not just a pause between lines)
         //   - We're past the end of singing
-        //   - We're not yet in the 3-second preview window (which advances the line)
+        //   - The next line hasn't started yet
         const pastSinging   = lastWordEnd ? currentTime >= lastWordEnd
                                           : (currentTime - (currentLine?.time ?? 0)) >= 2;
         const inBreak       = activeLine >= 0 && nextLine !== undefined
                               && totalBreak >= 20
                               && pastSinging
-                              && timeToNext !== null && timeToNext > 3;
+                              && timeToNext !== null && timeToNext > 0;
         const breakDuration = inBreak ? Math.round(totalBreak) : 0;
         const classMap = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' };
 

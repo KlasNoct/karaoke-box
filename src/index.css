@@ -782,7 +782,7 @@ textarea { resize: vertical; line-height: 1.7; }
 .lyric-break-info {
   font-style: italic;
   font-size: 24px;           /* matches .lyric-line.active on mobile */
-  color: rgba(91, 98, 128, 0.45);
+  color: rgba(255, 255, 255, 0.75);
   text-align: center;
   padding: 10px 0;           /* matches .lyric-line.active padding */
   letter-spacing: 0.04em;
