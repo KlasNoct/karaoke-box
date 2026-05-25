@@ -109,23 +109,28 @@ async function repPoll(predId, onTick, cancelRef) {
 }
 
 // ── Claude correction ─────────────────────────────────────────────────────────
-// Sends WhisperX word timestamps + LRClib correct text to Claude.
-// Claude maps each LRClib word to its nearest WhisperX timestamp.
-// Returns corrected lyrics array (LRClib text + WhisperX timing) or null on failure.
+// Claude returns compact format [{id,t,w:[[start,end],...]}] to fit Vercel timeout.
+// reconstructFromMinimal turns it back into full lyrics using lrcLines text.
+function reconstructFromMinimal(minimal, lrcLines) {
+  const lrcMap = Object.fromEntries(lrcLines.map(l => [l.id, l]));
+  return minimal.map(item => {
+    const lrc = lrcMap[item.id];
+    if (!lrc) return null;
+    const textWords = lrc.text.split(/\s+/).filter(Boolean);
+    const words = (item.w || []).slice(0, textWords.length).map((pair, i) => ({
+      word: textWords[i], start: pair[0], end: pair[1],
+    }));
+    return { ...lrc, time: item.t != null ? item.t : lrc.time, words };
+  }).filter(Boolean);
+}
+
 async function callClaudeCorrection(whisperOut, lrcLines) {
   if (!whisperOut?.segments || !lrcLines?.length) return null;
-
   const whisperWords = whisperOut.segments.flatMap(s =>
     (s.words || []).map(w => ({ word: w.word.replace(/^\s+/, ''), start: w.start, end: w.end }))
   );
-
-  if (!whisperWords.length) {
-    console.warn('[KaraKlas] WhisperX returned no word-level data — skipping Claude correction');
-    return null;
-  }
-
-  console.log(`[KaraKlas] Claude correction: ${whisperWords.length} WhisperX words, ${lrcLines.length} LRC lines`);
-
+  if (!whisperWords.length) { console.warn('[KaraKlas] No WhisperX word data'); return null; }
+  console.log(`[KaraKlas] Claude: ${whisperWords.length} words, ${lrcLines.length} lines`);
   try {
     const r = await fetch('/api/claude', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -133,19 +138,16 @@ async function callClaudeCorrection(whisperOut, lrcLines) {
     });
     const data = await r.json();
     if (data.error) throw new Error(data.error);
-
     const text = data.content?.[0]?.text;
-    if (!text) throw new Error('No content returned from Claude');
-
+    if (!text) throw new Error('No content');
     const clean = text.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
-    const corrected = JSON.parse(clean);
-    if (!Array.isArray(corrected)) throw new Error('Claude response is not an array');
-
-    const wordCount = corrected.reduce((n, l) => n + (l.words?.length || 0), 0);
-    console.log(`[KaraKlas] Claude correction done: ${corrected.length} lines, ${wordCount} words`);
+    const minimal = JSON.parse(clean);
+    if (!Array.isArray(minimal)) throw new Error('Not an array');
+    const corrected = reconstructFromMinimal(minimal, lrcLines);
+    console.log(`[KaraKlas] Claude done: ${corrected.length} lines, ${corrected.reduce((n,l)=>n+(l.words?.length||0),0)} words`);
     return corrected;
   } catch (e) {
-    console.warn('[KaraKlas] Claude correction failed:', e.message, '— falling back to raw WhisperX');
+    console.warn('[KaraKlas] Claude failed:', e.message);
     return null;
   }
 }
@@ -444,9 +446,14 @@ function AddSongScreen({ onSave }) {
     setWhisperState({ status: 'waiting', elapsed: 0 });
     setClaudeState({ status: 'waiting', elapsed: 0 });
     setResult(null); setErrorMsg('');
+
     let originalUrl = null;
+    let instrumentalUrl = null, vocalsUrl = null;
+    let lyrics = [], lyricsAlt = [], lyricsType = 'none';
+    let demucsErr = null, whisperErr = null, claudeApplied = false;
 
     try {
+      // ── Upload ──────────────────────────────────────────────────────────────
       setStage('uploading');
       originalUrl = await uploadAudioToSupabase(origFile);
       if (cancelRef.current.aborted) return;
@@ -457,100 +464,89 @@ function AddSongScreen({ onSave }) {
       const whisperPrompt = lrcResult?.plain || null;
 
       setStage('processing');
-      setDemucsState(p => ({ ...p, status: 'running' }));
-      setWhisperState(p => ({ ...p, status: 'running' }));
+
+      // ── Step 1: Demucs ───────────────────────────────────────────────────────
+      setDemucsState({ status: 'running' });
       startTick('demucs', setDemucsState);
+      const demucsId = await repCreate(DEMUCS_VERSION, {
+        audio: originalUrl, model_name: 'htdemucs', stem: 'vocals',
+        shifts: 1, overlap: 0.25, output_format: 'mp3',
+      });
+
+      try {
+        const demucsOut = await repPoll(demucsId, (st, el) => {
+          if (!cancelRef.current.aborted)
+            setDemucsState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el });
+        }, cancelRef.current);
+        stopTick('demucs'); setDemucsState({ status: 'done' });
+
+        const ir = getInstrumental(demucsOut); const vr = getVocals(demucsOut);
+        if (ir) instrumentalUrl = await uploadProcessedToSupabase(ir, 'instrumentals');
+        if (vr) vocalsUrl       = await uploadProcessedToSupabase(vr, 'vocals');
+        if (originalUrl) await deleteSupabaseFile(originalUrl);
+      } catch (e) {
+        stopTick('demucs'); demucsErr = e.message; setDemucsState({ status: 'error' });
+      }
+
+      if (cancelRef.current.aborted) return;
+
+      // ── Step 2: WhisperX on vocal stem (isolated vocals = better accuracy) ───
+      // Uses vocalsUrl (clean vocals from Demucs) instead of original mixed audio.
+      const whisperSource = vocalsUrl || originalUrl;
+      setWhisperState({ status: 'running' });
       startTick('whisper', setWhisperState);
 
-      const demucsId = await repCreate(DEMUCS_VERSION, { audio: originalUrl, model_name: 'htdemucs', stem: 'vocals', shifts: 1, overlap: 0.25, output_format: 'mp3' });
-      await sleep(12000);
-      const whisperPredId = await repCreate(WHISPERX_VERSION, {
-        audio_file: originalUrl,
-        align_output: true,
-        temperature: 0,
-        ...(whisperPrompt ? { initial_prompt: whisperPrompt } : {}),
-      });
+      let whisperOut = null;
+      try {
+        const whisperPredId = await repCreate(WHISPERX_VERSION, {
+          audio_file: whisperSource,
+          align_output: true,
+          temperature: 0,
+          ...(whisperPrompt ? { initial_prompt: whisperPrompt } : {}),
+        });
+        whisperOut = await repPoll(whisperPredId, (st, el) => {
+          if (!cancelRef.current.aborted)
+            setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el });
+        }, cancelRef.current);
+        stopTick('whisper'); setWhisperState({ status: 'done' });
+
+        console.log('[KaraKlas] WhisperX segments:', whisperOut?.segments?.length ?? 0);
+        console.log('[KaraKlas] First segment words:', whisperOut?.segments?.[0]?.words ?? 'NONE');
+        lyricsAlt = whisperToLines(whisperOut);
+        console.log(`[KaraKlas] WhisperX lines: ${lyricsAlt.length}, words: ${lyricsAlt.reduce((n,l)=>n+(l.words?.length||0),0)}`);
+      } catch (e) {
+        stopTick('whisper'); whisperErr = e.message; setWhisperState({ status: 'error' });
+      }
+
       if (cancelRef.current.aborted) return;
 
-      let instrumentalUrl = null, vocalsUrl = null;
-      let lyrics = [], lyricsAlt = [], lyricsType = 'none';
-      let demucsErr = null, whisperErr = null, claudeApplied = false;
+      // ── Step 3: Claude correction ────────────────────────────────────────────
+      if (whisperOut && hadLrc && lrcResult?.synced?.length > 0) {
+        setClaudeState({ status: 'running' });
+        startTick('claude', setClaudeState);
+        const corrected = await callClaudeCorrection(whisperOut, lrcResult.synced);
+        stopTick('claude');
 
-      // WhisperX promise chain includes the Claude correction step,
-      // so both run sequentially (WhisperX → Claude) while Demucs runs in parallel.
-      const whisperAndClaudePromise = repPoll(
-        whisperPredId,
-        (st, el) => { if (!cancelRef.current.aborted) setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); },
-        cancelRef.current
-      ).then(async out => {
-        stopTick('whisper'); setWhisperState(p => ({ ...p, status: 'done' }));
-
-        // Diagnostic logging
-        console.log('[KaraKlas] WhisperX raw output:', out);
-        console.log('[KaraKlas] Segments:', out?.segments?.length ?? 0);
-        console.log('[KaraKlas] First segment words:', out?.segments?.[0]?.words ?? 'NONE');
-
-        // Raw WhisperX → stored as lyricsAlt (backup)
-        lyricsAlt = whisperToLines(out);
-        const wordCount = lyricsAlt.reduce((n, l) => n + (l.words?.length || 0), 0);
-        console.log(`[KaraKlas] WhisperX: ${lyricsAlt.length} lines, ${wordCount} words`);
-        if (wordCount === 0) console.warn('[KaraKlas] ⚠️ No word timestamps — align_output may not have worked');
-
-        if (hadLrc && lrcResult?.synced?.length > 0 && !cancelRef.current.aborted) {
-          // Claude correction: map LRClib correct text to WhisperX timestamps
-          setClaudeState({ status: 'running' });
-          startTick('claude', setClaudeState);
-
-          const corrected = await callClaudeCorrection(out, lrcResult.synced);
-          stopTick('claude');
-
-          if (corrected?.length > 0) {
-            lyrics = corrected;
-            lyricsType = 'synced';
-            claudeApplied = true;
-            setClaudeState({ status: 'done' });
-            const cWords = lyrics.reduce((n, l) => n + (l.words?.length || 0), 0);
-            console.log(`[KaraKlas] Claude: ${lyrics.length} lines, ${cWords} words`);
-          } else {
-            // Claude failed — use mergeWordsIntoLines as fallback: keeps LRC line
-            // structure (correct line breaks) with WhisperX word timing where possible.
-            // Better than raw WhisperX which creates very long segments.
-            lyrics = mergeWordsIntoLines(lrcResult.synced, out);
-            lyricsType = lyrics.length > 0 ? 'synced' : 'none';
-            setClaudeState({ status: 'error' });
-          }
+        if (corrected?.length > 0) {
+          lyrics = corrected; lyricsType = 'synced'; claudeApplied = true;
+          setClaudeState({ status: 'done' });
         } else {
-          // No LRClib available — use WhisperX directly as primary
-          lyrics = lyricsAlt;
-          lyricsType = lyricsAlt.length > 0 ? 'synced' : 'none';
-          setClaudeState({ status: 'skipped' });
+          // Claude failed — mergeWordsIntoLines keeps LRC line structure
+          lyrics = mergeWordsIntoLines(lrcResult.synced, whisperOut);
+          lyricsType = 'synced';
+          setClaudeState({ status: 'error' });
         }
-      }).catch(e => {
-        stopTick('whisper'); stopTick('claude');
-        whisperErr = e.message;
-        setWhisperState({ status: 'error' });
+      } else if (whisperOut) {
+        lyrics = lyricsAlt; lyricsType = lyricsAlt.length > 0 ? 'synced' : 'none';
         setClaudeState({ status: 'skipped' });
-        // Fall back to LRClib if WhisperX fails
-        if (hadLrc && lrcResult?.synced?.length > 0) {
-          lyrics = lrcResult.synced; lyricsType = 'synced';
-        } else if (lrcResult?.plain) {
-          lyrics = lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] }));
-          lyricsType = 'plain';
-        }
-      });
+      } else if (hadLrc) {
+        // WhisperX failed entirely — fall back to LRClib
+        lyrics = lrcResult.synced.length > 0 ? lrcResult.synced
+               : lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] }));
+        lyricsType = lrcResult.synced.length > 0 ? 'synced' : 'plain';
+        setClaudeState({ status: 'skipped' });
+      }
 
-      await Promise.allSettled([
-        repPoll(demucsId, (st, el) => { if (!cancelRef.current.aborted) setDemucsState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); }, cancelRef.current).then(async out => {
-          stopTick('demucs'); setDemucsState(p => ({ ...p, status: 'done' }));
-          const ir = getInstrumental(out); const vr = getVocals(out);
-          if (ir) instrumentalUrl = await uploadProcessedToSupabase(ir, 'instrumentals');
-          if (vr) vocalsUrl = await uploadProcessedToSupabase(vr, 'vocals');
-          if (originalUrl) await deleteSupabaseFile(originalUrl);
-        }).catch(e => { stopTick('demucs'); demucsErr = e.message; setDemucsState(p => ({ ...p, status: 'error' })); }),
-        whisperAndClaudePromise,
-      ]);
-
-      if (cancelRef.current.aborted) return;
       setResult({ instrumentalUrl, vocalsUrl, lyrics, lyricsAlt, lyricsType, demucsErr, whisperErr, claudeApplied, hadLrc });
       setStage('review');
     } catch (e) {
@@ -558,27 +554,6 @@ function AddSongScreen({ onSave }) {
       setErrorMsg(e.message); setStage('error');
     }
   }
-
-  function handleSave() {
-    const r = result || {};
-    const textLines = lyricsText.trim()
-      ? parseLRC(lyricsText).length > 0 ? parseLRC(lyricsText)
-        : lyricsText.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3.5, text: t, color: null, words: [] }))
-      : [];
-    const finalLyrics = r.lyrics?.length > 0 ? r.lyrics : textLines;
-    onSave({
-      id: uid(), title: title.trim(), artist: artist.trim(),
-      audioUrl: r.instrumentalUrl || (instrFile ? URL.createObjectURL(instrFile) : null),
-      vocalsUrl: r.vocalsUrl || null,
-      hasAudio: !!(r.instrumentalUrl || instrFile),
-      lyrics: finalLyrics,
-      lyricsAlt: r.lyricsAlt?.length > 0 ? r.lyricsAlt : [],
-      lyricsType: r.lyrics?.length > 0 ? r.lyricsType : finalLyrics.length > 0 ? 'plain' : 'none',
-      lyricsSource: 'primary',
-      plainLyrics: lyricsText,
-    });
-  }
-
   if (stage === 'uploading') return (
     <div className="screen" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, textAlign: 'center', padding: '0 32px' }}>
       <i className="ti ti-cloud-upload spin" style={{ fontSize: 40, color: 'var(--muted)' }} aria-hidden="true" />
@@ -592,7 +567,7 @@ function AddSongScreen({ onSave }) {
       : 'Skipped — no LRClib reference available';
     const steps = [
       { key: 'demucs',  icon: 'ti-scissors',        label: 'Separating vocals',      sub: 'Demucs — saves instrumental + vocal stem', ...demucsState },
-      { key: 'whisper', icon: 'ti-text-recognition', label: 'Word timing via WhisperX', sub: 'Forced phoneme alignment — per-word timestamps', ...whisperState },
+      { key: 'whisper', icon: 'ti-text-recognition', label: 'Word timing via WhisperX', sub: 'WhisperX on isolated vocal stem — per-word timestamps', ...whisperState },
       { key: 'claude',  icon: 'ti-sparkles',         label: 'AI lyrics correction',   sub: claudeSub, ...claudeState },
     ];
     const statusColour = s => s === 'done' ? '#20bf6b' : s === 'error' ? 'var(--rose)' : s === 'skipped' ? 'var(--muted)' : 'var(--muted)';
@@ -600,7 +575,7 @@ function AddSongScreen({ onSave }) {
     return (
       <div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
         <p style={{ fontWeight: 700, fontSize: 17, marginBottom: 2 }}>Processing "{title}"…</p>
-        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Demucs and WhisperX run in parallel. AI correction follows WhisperX.</p>
+        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Steps run in sequence. WhisperX uses the isolated vocal track for better accuracy.</p>
         {steps.map(step => (
           <div key={step.key} className="step-row">
             <i className={`ti ${step.icon}${step.status === 'running' ? ' spin' : ''}`} style={{ color: statusColour(step.status) }} aria-hidden="true" />
