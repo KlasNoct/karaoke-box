@@ -81,8 +81,10 @@ const loadSettings   = () => { try { return JSON.parse(localStorage.getItem(SETT
 const persistSettings = s => { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch {} };
 
 // ── Replicate ─────────────────────────────────────────────────────────────────
-const DEMUCS_VERSION  = '25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953';
-const WHISPER_VERSION = '8099696689d249cf8b122d833c36ac3f75505c666a395ca40ef26f68e7d3d16e';
+const DEMUCS_VERSION   = '25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953';
+// WhisperX: forced phoneme alignment gives accurate per-word timestamps.
+// align_output MUST be true — without it, no word-level data is returned.
+const WHISPERX_VERSION = '5d4424b04099904320e7f7c8343d09788c88f8bf8d0b3ba160dfb97112ebb6ba';
 
 async function repCreate(version, input) {
   const r = await fetch('/api/replicate', {
@@ -232,7 +234,9 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
         {filtered.length === 0 && songs.length > 0 && (<p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>No results for "{q}"</p>)}
-        {filtered.map(song => (
+        {filtered.map(song => {
+          const hasWords = song.lyrics?.some(l => l.words?.length > 0);
+          return (
           <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onPlay(song)}>
             <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
               <div className="song-title">{song.title}</div>
@@ -241,11 +245,13 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, flexShrink: 0 }}>
               {(song.hasAudio || song.audioUrl) && <span className="badge badge-green badge-xs">Ready</span>}
               {song.lyricsType === 'synced' && <span className="badge badge-blue badge-xs">Synced</span>}
+              {hasWords && <span className="badge badge-teal badge-xs">Words</span>}
             </div>
             <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
             <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${song.title}"?`)) onDelete(song); }} aria-label="Delete"><i className="ti ti-trash" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -356,8 +362,10 @@ function AddSongScreen({ onSave }) {
       startTick('whisper', setWhisperState);
       const demucsId = await repCreate(DEMUCS_VERSION, { audio: originalUrl, model_name: 'htdemucs', stem: 'vocals', shifts: 1, overlap: 0.25, output_format: 'mp3' });
       await sleep(12000);
-      const whisperPredId = await repCreate(WHISPER_VERSION, {
-        audio: originalUrl, word_timestamps: true, temperature: 0,
+      const whisperPredId = await repCreate(WHISPERX_VERSION, {
+        audio_file: originalUrl,  // WhisperX uses audio_file, not audio
+        align_output: true,       // REQUIRED — enables forced phoneme alignment for word timestamps
+        temperature: 0,
         ...(whisperPrompt ? { initial_prompt: whisperPrompt } : {}),
       });
       if (cancelRef.current.aborted) return;
@@ -372,13 +380,25 @@ function AddSongScreen({ onSave }) {
         }).catch(e => { stopTick('demucs'); demucsErr = e.message; setDemucsState(p => ({ ...p, status: 'error' })); }),
         repPoll(whisperPredId, (st, el) => { if (!cancelRef.current.aborted) setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); }, cancelRef.current).then(out => {
           stopTick('whisper'); setWhisperState(p => ({ ...p, status: 'done' }));
-          // Merge LRClib line structure + Whisper word timestamps (best of both)
+
+          // ── Diagnostic logging — open browser DevTools > Console to inspect ──
+          console.log('[KaraKlas] WhisperX raw output:', out);
+          console.log('[KaraKlas] Segments received:', out?.segments?.length ?? 0);
+          console.log('[KaraKlas] First segment:', out?.segments?.[0]);
+          console.log('[KaraKlas] First segment words:', out?.segments?.[0]?.words ?? 'NONE — align_output may not have worked');
+          console.log('[KaraKlas] Using LRClib merge:', hadLrc);
+
+          // Merge LRClib line structure + WhisperX word timestamps (best of both)
           if (hadLrc && lrcResult?.synced?.length > 0) {
             lyrics = mergeWordsIntoLines(lrcResult.synced, out);
           } else {
             lyrics = whisperToLines(out);
           }
           lyricsType = 'synced';
+
+          const wordCount = lyrics.reduce((n, l) => n + (l.words?.length ?? 0), 0);
+          console.log(`[KaraKlas] Final: ${lyrics.length} lines, ${wordCount} words with timestamps`);
+          if (wordCount === 0) console.warn('[KaraKlas] ⚠️ No word timestamps saved — colour wash will not work');
         }).catch(e => {
           stopTick('whisper'); whisperErr = e.message; setWhisperState(p => ({ ...p, status: 'error' }));
           // Whisper failed — fall back to LRClib if we have it
@@ -407,7 +427,7 @@ function AddSongScreen({ onSave }) {
   if (stage === 'processing') {
     const steps = [
       { key: 'demucs', icon: 'ti-scissors', label: 'Separating vocals', sub: 'Demucs — saves instrumental + vocal stem', ...demucsState },
-      { key: 'whisper', icon: 'ti-text-recognition', label: 'Word timing', sub: 'Whisper aligns each word to audio — merges with LRClib line structure if available', ...whisperState },
+      { key: 'whisper', icon: 'ti-text-recognition', label: 'Word timing via WhisperX', sub: 'Forced phoneme alignment — accurate per-word timestamps', ...whisperState },
     ];
     return (<div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}><p style={{ fontWeight: 700, fontSize: 17, marginBottom: 2 }}>Processing "{title}"…</p><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Both steps run in parallel. Usually 2–5 minutes.</p>{steps.map(step => (<div key={step.key} className="step-row"><i className={`ti ${step.icon}${step.status === 'running' ? ' spin' : ''}`} style={{ color: step.status === 'done' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }} aria-hidden="true" /><div className="step-info"><div className="step-title">{step.label}</div><div className="step-sub">{step.sub}</div></div><div className="step-status" style={{ color: step.status === 'done' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }}>{step.status === 'done' ? '✓ Done' : step.status === 'error' ? 'Failed' : step.status === 'running' ? fmt(step.elapsed) : '…'}</div></div>))}<button className="btn btn-secondary" onClick={() => { cancelRef.current.aborted = true; setStage('idle'); }}><i className="ti ti-x" aria-hidden="true" /> Cancel</button></div>);
   }
@@ -551,6 +571,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
 
   // ── Shared render pieces ───────────────────────────────────────────────────
   const lyrics     = song.lyrics || [];
+  const hasWords   = lyrics.some(l => l.words?.length > 0);
   const pct        = duration > 0 ? (currentTime / duration) * 100 : 0;
   const c          = songColor(song);
   const showNextUp = !!nextUpSong && duration > 0 && (duration - currentTime) <= 20 && (duration - currentTime) > 0;
@@ -689,6 +710,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
             {song.title}{song.artist ? ` — ${song.artist}` : ''}
           </p>
           {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
+          {hasWords && <span className="badge badge-teal badge-xs" style={{flexShrink:0}}>⚡ Words</span>}
         </div>
 
         {/* Lyrics — takes all remaining space, large fonts via CSS */}
@@ -739,6 +761,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         <div className="song-avatar" style={{ background: c.bg, color: c.fg, width: 44, height: 44, fontSize: 18 }}>{song.title[0]?.toUpperCase()}</div>
         <div className="player-meta"><div className="player-title">{song.title}</div><div className="player-artist">{song.artist || 'Unknown artist'}</div></div>
         {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
+        {hasWords && <span className="badge badge-teal badge-xs">⚡ Words</span>}
       </div>
       {playError && (
         <div style={{ margin: '0 20px 6px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>
