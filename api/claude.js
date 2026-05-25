@@ -1,5 +1,9 @@
 // Proxies lyrics correction requests to the Claude API.
 // Requires ANTHROPIC_API_KEY in Vercel environment variables.
+
+// Extend Vercel function timeout to 60s (Haiku is fast; safety net for long songs)
+export const config = { maxDuration: 60 };
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
 
@@ -40,7 +44,7 @@ lrcLines:${JSON.stringify(lrcLines)}`;
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 8192,
         system,
         messages: [{ role: 'user', content: userMsg }],
