@@ -1,7 +1,7 @@
-// Proxies lyrics correction requests to the Claude API.
+// Proxies lyrics correction to Claude API using a minimal output format
+// that reduces output tokens ~80%, staying within Vercel Hobby timeouts.
 // Requires ANTHROPIC_API_KEY in Vercel environment variables.
 
-// Extend Vercel function timeout to 60s (Haiku is fast; safety net for long songs)
 export const config = { maxDuration: 60 };
 
 export default async function handler(req, res) {
@@ -13,24 +13,28 @@ export default async function handler(req, res) {
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set in Vercel environment variables' });
+  if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
 
+  // Minimal output format reduces output tokens from ~5000 to ~1000.
+  // App reconstructs full lyrics from this compact representation.
   const system = `You are a lyrics alignment assistant for a karaoke app.
 
 INPUT:
-- whisperWords: word-level timestamps from WhisperX audio analysis {word,start,end} — timing is accurate, spelling may have errors
-- lrcLines: lyric lines from LRClib {id,time,text,color,words} — text is correct, timing may be off
+- whisperWords: word timestamps from audio {word,start,end} — timing is accurate
+- lrcLines: lyric lines {id,time,text,...} — text is correct
 
-TASK: For each LRClib line, map its words to WhisperX timestamps.
+TASK: Map each LRClib line's words to WhisperX timestamps.
 
-RULES:
-1. Keep each LRClib line text EXACTLY as-is (spelling, capitalisation, punctuation)
-2. Use WhisperX start/end times for each word's timing
-3. Match LRClib words to WhisperX words by sound: "using"="usin'", "gonna"="going to", etc.
-4. Set each line's "time" to the WhisperX start time of its first matched word
-5. If a line has no matching WhisperX words, keep original LRClib time and set words:[]
-6. Preserve id and color from each LRClib line exactly
-7. Return ONLY compact JSON — no markdown fences, no explanation, no extra whitespace`;
+OUTPUT: compact JSON array only, no markdown, no explanation:
+[{"id":"<id>","t":<time>,"w":[[start,end],[start,end],...]}]
+
+Rules:
+- "id" = lrcLine id exactly
+- "t" = WhisperX start time of line's first matched word
+- "w" = [start,end] pairs, one per word in lrcLine.text order
+- Match by sound: "using"="usin'", "gonna"="going to" etc.
+- No match: use original lrcLine.time and "w":[]
+- Return ALL lrcLines in input order`;
 
   const userMsg = `whisperWords:${JSON.stringify(whisperWords)}
 lrcLines:${JSON.stringify(lrcLines)}`;
@@ -45,7 +49,7 @@ lrcLines:${JSON.stringify(lrcLines)}`;
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 8192,
+        max_tokens: 4096,
         system,
         messages: [{ role: 'user', content: userMsg }],
       }),
@@ -53,11 +57,11 @@ lrcLines:${JSON.stringify(lrcLines)}`;
 
     if (!response.ok) {
       const err = await response.text();
-      return res.status(response.status).json({ error: `Claude API error: ${err}` });
+      return res.status(response.status).json({ error: `Claude API: ${err}` });
     }
 
     const data = await response.json();
-    if (data.error) return res.status(500).json({ error: data.error.message || 'Unknown Claude error' });
+    if (data.error) return res.status(500).json({ error: data.error.message || 'Unknown error' });
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
