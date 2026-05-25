@@ -7,7 +7,7 @@ const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = SUPA_URL && SUPA_KEY ? createClient(SUPA_URL, SUPA_KEY) : null;
 
 async function uploadAudioToSupabase(file) {
-  if (!supabase) throw new Error('Supabase not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.');
+  if (!supabase) throw new Error('Supabase not configured.');
   const ext = file.name.split('.').pop() || 'mp3';
   const path = `originals/${Date.now()}.${ext}`;
   const { error } = await supabase.storage.from('songs').upload(path, file, { upsert: false });
@@ -48,14 +48,10 @@ async function archiveDeletedSong(song) {
     const { data } = await supabase.storage.from('songs').download(`library/${song.id}.json`);
     if (data) {
       const current = JSON.parse(await data.text());
-      const archived = new Blob(
-        [JSON.stringify({ ...current, _deleted: true, _deletedAt: Date.now() })],
-        { type: 'application/json' }
-      );
-      await supabase.storage.from('songs')
-        .upload(`deleted/${song.id}.json`, archived, { upsert: true, contentType: 'application/json' });
+      const archived = new Blob([JSON.stringify({ ...current, _deleted: true, _deletedAt: Date.now() })], { type: 'application/json' });
+      await supabase.storage.from('songs').upload(`deleted/${song.id}.json`, archived, { upsert: true, contentType: 'application/json' });
     }
-  } catch (e) { console.warn('Could not archive to deleted/ folder:', e.message); }
+  } catch (e) { console.warn('Could not archive:', e.message); }
   await supabase.storage.from('songs').remove([`library/${song.id}.json`]);
 }
 
@@ -82,8 +78,7 @@ const persistSettings = s => { try { localStorage.setItem(SETTINGS_KEY, JSON.str
 
 // ── Replicate ─────────────────────────────────────────────────────────────────
 const DEMUCS_VERSION   = '25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953';
-// WhisperX: forced phoneme alignment gives accurate per-word timestamps.
-// align_output MUST be true — without it, no word-level data is returned.
+// WhisperX: forced phoneme alignment. align_output MUST be true for word timestamps.
 const WHISPERX_VERSION = '5d4424b04099904320e7f7c8343d09788c88f8bf8d0b3ba160dfb97112ebb6ba';
 
 async function repCreate(version, input) {
@@ -111,6 +106,48 @@ async function repPoll(predId, onTick, cancelRef) {
     if (d.status === 'failed' || d.status === 'canceled') throw new Error(d.error || d.status);
   }
   throw new Error('cancelled');
+}
+
+// ── Claude correction ─────────────────────────────────────────────────────────
+// Sends WhisperX word timestamps + LRClib correct text to Claude.
+// Claude maps each LRClib word to its nearest WhisperX timestamp.
+// Returns corrected lyrics array (LRClib text + WhisperX timing) or null on failure.
+async function callClaudeCorrection(whisperOut, lrcLines) {
+  if (!whisperOut?.segments || !lrcLines?.length) return null;
+
+  const whisperWords = whisperOut.segments.flatMap(s =>
+    (s.words || []).map(w => ({ word: w.word.replace(/^\s+/, ''), start: w.start, end: w.end }))
+  );
+
+  if (!whisperWords.length) {
+    console.warn('[KaraKlas] WhisperX returned no word-level data — skipping Claude correction');
+    return null;
+  }
+
+  console.log(`[KaraKlas] Claude correction: ${whisperWords.length} WhisperX words, ${lrcLines.length} LRC lines`);
+
+  try {
+    const r = await fetch('/api/claude', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ whisperWords, lrcLines }),
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+
+    const text = data.content?.[0]?.text;
+    if (!text) throw new Error('No content returned from Claude');
+
+    const clean = text.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
+    const corrected = JSON.parse(clean);
+    if (!Array.isArray(corrected)) throw new Error('Claude response is not an array');
+
+    const wordCount = corrected.reduce((n, l) => n + (l.words?.length || 0), 0);
+    console.log(`[KaraKlas] Claude correction done: ${corrected.length} lines, ${wordCount} words`);
+    return corrected;
+  } catch (e) {
+    console.warn('[KaraKlas] Claude correction failed:', e.message, '— falling back to raw WhisperX');
+    return null;
+  }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -143,7 +180,7 @@ function whisperToLines(out) {
   if (segs.length > 0) {
     return segs.map(s => ({
       id: uid(), time: s.start, text: s.text.trim(), color: null,
-      words: (s.words || []).map(w => ({ word: w.word.replace(/^\s/, ''), start: w.start, end: w.end })),
+      words: (s.words || []).map(w => ({ word: w.word.replace(/^\s+/, ''), start: w.start, end: w.end })),
     })).filter(l => l.text);
   }
   const text = out.transcription || out.text || (typeof out === 'string' ? out : '');
@@ -163,19 +200,14 @@ function getVocals(out) {
   return out.vocals || null;
 }
 
-// Merges LRClib line structure with Whisper word timestamps.
-// Each LRClib line gets the Whisper words that fall within its time window.
+// Merge LRClib line structure with WhisperX word timestamps (used as fallback if Claude fails)
 function mergeWordsIntoLines(lrcLines, whisperOut) {
   if (!lrcLines?.length || !whisperOut) return lrcLines;
-  // Collect all word objects from Whisper segments
   const allWords = [];
-  for (const seg of (whisperOut.segments || [])) {
-    for (const w of (seg.words || [])) {
+  for (const seg of (whisperOut.segments || []))
+    for (const w of (seg.words || []))
       allWords.push({ word: w.word.replace(/^\s+/, ''), start: w.start, end: w.end });
-    }
-  }
-  if (!allWords.length) return lrcLines; // Whisper had no word data — return lines as-is
-  // Assign each word to the line whose time window it falls within
+  if (!allWords.length) return lrcLines;
   return lrcLines.map((line, i) => {
     const lineStart = line.time;
     const lineEnd   = lrcLines[i + 1]?.time ?? Infinity;
@@ -217,17 +249,13 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
   const filtered = songs.filter(s => s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase()));
   return (
     <div className="screen">
-      <div className="page-header">
-        <div><div className="page-title">🎤 KaraKlas</div><div className="page-sub">{songs.length} song{songs.length !== 1 ? 's' : ''} in your box</div></div>
-      </div>
+      <div className="page-header"><div><div className="page-title">🎤 KaraKlas</div><div className="page-sub">{songs.length} song{songs.length !== 1 ? 's' : ''} in your box</div></div></div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 18px 12px' }}>
         <div className="search-wrap" style={{ flex: 1, margin: 0, padding: 0 }}>
           <i className="ti ti-search search-icon" aria-hidden="true" />
           <input placeholder="Search songs…" value={q} onChange={e => setQ(e.target.value)} />
         </div>
-        <button className="shuffle-btn" onClick={onStartRandom}
-          disabled={songs.filter(s => s.hasAudio || s.audioUrl).length < 2}
-          aria-label="Shuffle play" title="Shuffle — play random songs">
+        <button className="shuffle-btn" onClick={onStartRandom} disabled={songs.filter(s => s.hasAudio || s.audioUrl).length < 2} aria-label="Shuffle play" title="Shuffle — play random songs">
           <i className="ti ti-arrows-shuffle" aria-hidden="true" />
         </button>
       </div>
@@ -237,19 +265,19 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
         {filtered.map(song => {
           const hasWords = song.lyrics?.some(l => l.words?.length > 0);
           return (
-          <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onPlay(song)}>
-            <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
-              <div className="song-title">{song.title}</div>
-              <div className="song-artist">{song.artist || 'Unknown artist'}</div>
+            <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onPlay(song)}>
+              <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                <div className="song-title">{song.title}</div>
+                <div className="song-artist">{song.artist || 'Unknown artist'}</div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, flexShrink: 0 }}>
+                {(song.hasAudio || song.audioUrl) && <span className="badge badge-green badge-xs">Ready</span>}
+                {song.lyricsType === 'synced' && <span className="badge badge-blue badge-xs">Synced</span>}
+                {hasWords && <span className="badge badge-teal badge-xs">Words</span>}
+              </div>
+              <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
+              <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${song.title}"?`)) onDelete(song); }} aria-label="Delete"><i className="ti ti-trash" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, flexShrink: 0 }}>
-              {(song.hasAudio || song.audioUrl) && <span className="badge badge-green badge-xs">Ready</span>}
-              {song.lyricsType === 'synced' && <span className="badge badge-blue badge-xs">Synced</span>}
-              {hasWords && <span className="badge badge-teal badge-xs">Words</span>}
-            </div>
-            <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
-            <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${song.title}"?`)) onDelete(song); }} aria-label="Delete"><i className="ti ti-trash" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
-          </div>
           );
         })}
       </div>
@@ -260,35 +288,76 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
 
 // ── EDITOR SCREEN ─────────────────────────────────────────────────────────────
 function EditorScreen({ song, onSave, onBack }) {
+  const hasAlt = (song.lyricsAlt?.length ?? 0) > 0;
+  const [editingAlt, setEditingAlt] = useState(false);
   const [localTitle, setLocalTitle]   = useState(song.title  || '');
   const [localArtist, setLocalArtist] = useState(song.artist || '');
-  const [lines, setLines]             = useState((song.lyrics || []).map(l => ({ id: uid(), color: null, words: [], ...l })));
+  const [lines, setLines]             = useState(() => (song.lyrics || []).map(l => ({ id: uid(), color: null, words: [], ...l })));
   const [activeIdx, setActiveIdx]     = useState(null);
   const [saving, setSaving]           = useState(false);
+
+  function getSourceLines(useAlt) {
+    const src = useAlt ? (song.lyricsAlt || []) : (song.lyrics || []);
+    return src.map(l => ({ id: uid(), color: null, words: [], ...l }));
+  }
+
+  function handleToggleSource(useAlt) {
+    if (useAlt === editingAlt) return;
+    if (lines.length > 0 && !window.confirm(`Switch to ${useAlt ? 'WhisperX' : 'AI-corrected'} source? Unsaved changes will be lost.`)) return;
+    setEditingAlt(useAlt);
+    setLines(getSourceLines(useAlt));
+    setActiveIdx(null);
+  }
 
   function updateLine(idx, field, value) { setLines(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l)); }
   function deleteLine(idx, e) { e?.stopPropagation(); setLines(prev => prev.filter((_, i) => i !== idx)); setActiveIdx(prev => prev === null || prev < idx ? prev : prev === idx ? null : prev - 1); }
   function addLine() { const t = lines[lines.length - 1]?.time || 0; setLines(prev => [...prev, { id: uid(), time: t + 3, text: '', color: null, words: [] }]); setActiveIdx(lines.length); }
+
   async function handleSave() {
     setSaving(true);
     const sorted = [...lines].sort((a, b) => a.time - b.time);
-    await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none' });
+    if (editingAlt) {
+      // Saving the WhisperX backup — preserve primary lyrics unchanged
+      await onSave({ ...song, lyricsAlt: sorted });
+    } else {
+      // Saving the primary (AI-corrected) lyrics
+      await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none' });
+    }
     setSaving(false);
   }
+
+  const sourceLabel = editingAlt ? 'WhisperX (backup)' : 'AI-corrected (primary)';
 
   return (
     <div className="editor-shell">
       <div className="editor-header">
         <button className="btn btn-ghost" style={{ padding: 8, flexShrink: 0 }} onClick={onBack}><i className="ti ti-arrow-left" style={{ fontSize: 20 }} aria-hidden="true" /></button>
-        <div style={{ flex: 1, minWidth: 0 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{localTitle || 'Edit song'}</p><p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{lines.length} lines · click a row to edit</p></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: 16, fontWeight: 800, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{localTitle || 'Edit song'}</p>
+          <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{lines.length} lines · Editing: {sourceLabel}</p>
+        </div>
         <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ flexShrink: 0 }}>{saving ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Saving…</> : 'Save'}</button>
       </div>
+
       <div className="editor-list">
-        <div className="card" style={{ marginBottom: 8 }}>
-          <span className="card-label">Song details</span>
-          <div className="field"><input value={localTitle} onChange={e => setLocalTitle(e.target.value)} placeholder="Song title" /></div>
-          <div className="field" style={{ marginBottom: 0 }}><input value={localArtist} onChange={e => setLocalArtist(e.target.value)} placeholder="Artist name" /></div>
-        </div>
+        {/* Source toggle — only shown when both sources exist */}
+        {hasAlt && (
+          <div className="source-toggle">
+            <button className={`source-tab${!editingAlt ? ' active' : ''}`} onClick={() => handleToggleSource(false)}>AI-corrected</button>
+            <button className={`source-tab${editingAlt ? ' active' : ''}`} onClick={() => handleToggleSource(true)}>WhisperX</button>
+          </div>
+        )}
+
+        {/* Song details — only editable in primary source */}
+        {!editingAlt && (
+          <div className="card" style={{ marginBottom: 8 }}>
+            <span className="card-label">Song details</span>
+            <div className="field"><input value={localTitle} onChange={e => setLocalTitle(e.target.value)} placeholder="Song title" /></div>
+            <div className="field" style={{ marginBottom: 0 }}><input value={localArtist} onChange={e => setLocalArtist(e.target.value)} placeholder="Artist name" /></div>
+          </div>
+        )}
+
+        {/* Lyric lines */}
         {lines.map((line, idx) => {
           const isActive = activeIdx === idx;
           if (isActive) return (
@@ -313,6 +382,7 @@ function EditorScreen({ song, onSave, onBack }) {
             </div>
           );
         })}
+
         <button className="btn btn-secondary" onClick={addLine} style={{ marginTop: 10, alignSelf: 'flex-start' }}><i className="ti ti-plus" aria-hidden="true" /> Add line</button>
       </div>
     </div>
@@ -329,8 +399,10 @@ function AddSongScreen({ onSave }) {
   const [lyricsText, setLyricsText] = useState('');
   const [mode, setMode]           = useState('auto');
   const [stage, setStage]         = useState('idle');
-  const [demucsState, setDemucsState] = useState({ status: 'waiting', elapsed: 0 });
+  const [demucsState, setDemucsState]   = useState({ status: 'waiting', elapsed: 0 });
   const [whisperState, setWhisperState] = useState({ status: 'waiting', elapsed: 0 });
+  const [claudeState, setClaudeState]   = useState({ status: 'waiting', elapsed: 0 });
+  const [lrcFound, setLrcFound]   = useState(false);
   const [result, setResult]       = useState(null);
   const [errorMsg, setErrorMsg]   = useState('');
   const cancelRef = useRef({ aborted: false });
@@ -343,33 +415,103 @@ function AddSongScreen({ onSave }) {
   async function handleProcess() {
     if (!origFile || !title.trim()) return;
     cancelRef.current = { aborted: false };
-    setDemucsState({ status: 'waiting', elapsed: 0 }); setWhisperState({ status: 'waiting', elapsed: 0 });
+    setDemucsState({ status: 'waiting', elapsed: 0 });
+    setWhisperState({ status: 'waiting', elapsed: 0 });
+    setClaudeState({ status: 'waiting', elapsed: 0 });
     setResult(null); setErrorMsg('');
     let originalUrl = null;
+
     try {
       setStage('uploading');
       originalUrl = await uploadAudioToSupabase(origFile);
       if (cancelRef.current.aborted) return;
+
       const lrcResult = title.trim() ? await lrcSearch(artist, title) : null;
-      // Always run Whisper for word-level timestamps.
-      // Pass LRClib lyrics as initial_prompt so Whisper aligns to known words.
-      const whisperPrompt = lrcResult?.plain || null;
       const hadLrc = !!(lrcResult?.synced?.length > 0);
+      setLrcFound(hadLrc);
+      const whisperPrompt = lrcResult?.plain || null;
+
       setStage('processing');
       setDemucsState(p => ({ ...p, status: 'running' }));
       setWhisperState(p => ({ ...p, status: 'running' }));
       startTick('demucs', setDemucsState);
       startTick('whisper', setWhisperState);
+
       const demucsId = await repCreate(DEMUCS_VERSION, { audio: originalUrl, model_name: 'htdemucs', stem: 'vocals', shifts: 1, overlap: 0.25, output_format: 'mp3' });
       await sleep(12000);
       const whisperPredId = await repCreate(WHISPERX_VERSION, {
-        audio_file: originalUrl,  // WhisperX uses audio_file, not audio
-        align_output: true,       // REQUIRED — enables forced phoneme alignment for word timestamps
+        audio_file: originalUrl,
+        align_output: true,
         temperature: 0,
         ...(whisperPrompt ? { initial_prompt: whisperPrompt } : {}),
       });
       if (cancelRef.current.aborted) return;
-      let instrumentalUrl = null, vocalsUrl = null, lyrics = [], lyricsType = 'none', demucsErr = null, whisperErr = null;
+
+      let instrumentalUrl = null, vocalsUrl = null;
+      let lyrics = [], lyricsAlt = [], lyricsType = 'none';
+      let demucsErr = null, whisperErr = null, claudeApplied = false;
+
+      // WhisperX promise chain includes the Claude correction step,
+      // so both run sequentially (WhisperX → Claude) while Demucs runs in parallel.
+      const whisperAndClaudePromise = repPoll(
+        whisperPredId,
+        (st, el) => { if (!cancelRef.current.aborted) setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); },
+        cancelRef.current
+      ).then(async out => {
+        stopTick('whisper'); setWhisperState(p => ({ ...p, status: 'done' }));
+
+        // Diagnostic logging
+        console.log('[KaraKlas] WhisperX raw output:', out);
+        console.log('[KaraKlas] Segments:', out?.segments?.length ?? 0);
+        console.log('[KaraKlas] First segment words:', out?.segments?.[0]?.words ?? 'NONE');
+
+        // Raw WhisperX → stored as lyricsAlt (backup)
+        lyricsAlt = whisperToLines(out);
+        const wordCount = lyricsAlt.reduce((n, l) => n + (l.words?.length || 0), 0);
+        console.log(`[KaraKlas] WhisperX: ${lyricsAlt.length} lines, ${wordCount} words`);
+        if (wordCount === 0) console.warn('[KaraKlas] ⚠️ No word timestamps — align_output may not have worked');
+
+        if (hadLrc && lrcResult?.synced?.length > 0 && !cancelRef.current.aborted) {
+          // Claude correction: map LRClib correct text to WhisperX timestamps
+          setClaudeState({ status: 'running' });
+          startTick('claude', setClaudeState);
+
+          const corrected = await callClaudeCorrection(out, lrcResult.synced);
+          stopTick('claude');
+
+          if (corrected?.length > 0) {
+            lyrics = corrected;
+            lyricsType = 'synced';
+            claudeApplied = true;
+            setClaudeState({ status: 'done' });
+            const cWords = lyrics.reduce((n, l) => n + (l.words?.length || 0), 0);
+            console.log(`[KaraKlas] Claude: ${lyrics.length} lines, ${cWords} words`);
+          } else {
+            // Claude failed — fall back to raw WhisperX
+            lyrics = lyricsAlt;
+            lyricsType = lyricsAlt.length > 0 ? 'synced' : 'none';
+            setClaudeState({ status: 'error' });
+          }
+        } else {
+          // No LRClib available — use WhisperX directly as primary
+          lyrics = lyricsAlt;
+          lyricsType = lyricsAlt.length > 0 ? 'synced' : 'none';
+          setClaudeState({ status: 'skipped' });
+        }
+      }).catch(e => {
+        stopTick('whisper'); stopTick('claude');
+        whisperErr = e.message;
+        setWhisperState({ status: 'error' });
+        setClaudeState({ status: 'skipped' });
+        // Fall back to LRClib if WhisperX fails
+        if (hadLrc && lrcResult?.synced?.length > 0) {
+          lyrics = lrcResult.synced; lyricsType = 'synced';
+        } else if (lrcResult?.plain) {
+          lyrics = lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] }));
+          lyricsType = 'plain';
+        }
+      });
+
       await Promise.allSettled([
         repPoll(demucsId, (st, el) => { if (!cancelRef.current.aborted) setDemucsState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); }, cancelRef.current).then(async out => {
           stopTick('demucs'); setDemucsState(p => ({ ...p, status: 'done' }));
@@ -378,83 +520,129 @@ function AddSongScreen({ onSave }) {
           if (vr) vocalsUrl = await uploadProcessedToSupabase(vr, 'vocals');
           if (originalUrl) await deleteSupabaseFile(originalUrl);
         }).catch(e => { stopTick('demucs'); demucsErr = e.message; setDemucsState(p => ({ ...p, status: 'error' })); }),
-        repPoll(whisperPredId, (st, el) => { if (!cancelRef.current.aborted) setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el }); }, cancelRef.current).then(out => {
-          stopTick('whisper'); setWhisperState(p => ({ ...p, status: 'done' }));
-
-          // ── Diagnostic logging — open browser DevTools > Console to inspect ──
-          console.log('[KaraKlas] WhisperX raw output:', out);
-          console.log('[KaraKlas] Segments received:', out?.segments?.length ?? 0);
-          console.log('[KaraKlas] First segment:', out?.segments?.[0]);
-          console.log('[KaraKlas] First segment words:', out?.segments?.[0]?.words ?? 'NONE — align_output may not have worked');
-          console.log('[KaraKlas] Using LRClib merge:', hadLrc);
-
-          // Merge LRClib line structure + WhisperX word timestamps (best of both)
-          if (hadLrc && lrcResult?.synced?.length > 0) {
-            lyrics = mergeWordsIntoLines(lrcResult.synced, out);
-          } else {
-            lyrics = whisperToLines(out);
-          }
-          lyricsType = 'synced';
-
-          const wordCount = lyrics.reduce((n, l) => n + (l.words?.length ?? 0), 0);
-          console.log(`[KaraKlas] Final: ${lyrics.length} lines, ${wordCount} words with timestamps`);
-          if (wordCount === 0) console.warn('[KaraKlas] ⚠️ No word timestamps saved — colour wash will not work');
-        }).catch(e => {
-          stopTick('whisper'); whisperErr = e.message; setWhisperState(p => ({ ...p, status: 'error' }));
-          // Whisper failed — fall back to LRClib if we have it
-          if (hadLrc && lrcResult?.synced?.length > 0) {
-            lyrics = lrcResult.synced; lyricsType = 'synced';
-          } else if (lrcResult?.plain) {
-            lyrics = lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] }));
-            lyricsType = 'plain';
-          }
-        }),
+        whisperAndClaudePromise,
       ]);
+
       if (cancelRef.current.aborted) return;
-      setResult({ instrumentalUrl, vocalsUrl, lyrics, lyricsType, demucsErr, whisperErr, hadLrc }); setStage('review');
-    } catch (e) { Object.values(timers.current).forEach(clearInterval); setErrorMsg(e.message); setStage('error'); }
+      setResult({ instrumentalUrl, vocalsUrl, lyrics, lyricsAlt, lyricsType, demucsErr, whisperErr, claudeApplied, hadLrc });
+      setStage('review');
+    } catch (e) {
+      Object.values(timers.current).forEach(clearInterval);
+      setErrorMsg(e.message); setStage('error');
+    }
   }
 
   function handleSave() {
     const r = result || {};
-    const textLines = lyricsText.trim() ? parseLRC(lyricsText).length > 0 ? parseLRC(lyricsText) : lyricsText.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3.5, text: t, color: null, words: [] })) : [];
+    const textLines = lyricsText.trim()
+      ? parseLRC(lyricsText).length > 0 ? parseLRC(lyricsText)
+        : lyricsText.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3.5, text: t, color: null, words: [] }))
+      : [];
     const finalLyrics = r.lyrics?.length > 0 ? r.lyrics : textLines;
-    onSave({ id: uid(), title: title.trim(), artist: artist.trim(), audioUrl: r.instrumentalUrl || (instrFile ? URL.createObjectURL(instrFile) : null), vocalsUrl: r.vocalsUrl || null, hasAudio: !!(r.instrumentalUrl || instrFile), lyrics: finalLyrics, lyricsType: r.lyrics?.length > 0 ? r.lyricsType : finalLyrics.length > 0 ? 'plain' : 'none', plainLyrics: lyricsText });
+    onSave({
+      id: uid(), title: title.trim(), artist: artist.trim(),
+      audioUrl: r.instrumentalUrl || (instrFile ? URL.createObjectURL(instrFile) : null),
+      vocalsUrl: r.vocalsUrl || null,
+      hasAudio: !!(r.instrumentalUrl || instrFile),
+      lyrics: finalLyrics,
+      lyricsAlt: r.lyricsAlt?.length > 0 ? r.lyricsAlt : [],
+      lyricsType: r.lyrics?.length > 0 ? r.lyricsType : finalLyrics.length > 0 ? 'plain' : 'none',
+      plainLyrics: lyricsText,
+    });
   }
 
-  if (stage === 'uploading') return (<div className="screen" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, textAlign: 'center', padding: '0 32px' }}><i className="ti ti-cloud-upload spin" style={{ fontSize: 40, color: 'var(--muted)' }} aria-hidden="true" /><p style={{ fontWeight: 700, fontSize: 16 }}>Uploading "{title}"…</p><p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>Saving to Supabase, then sending to Replicate.</p></div>);
-
-  if (stage === 'processing') {
-    const steps = [
-      { key: 'demucs', icon: 'ti-scissors', label: 'Separating vocals', sub: 'Demucs — saves instrumental + vocal stem', ...demucsState },
-      { key: 'whisper', icon: 'ti-text-recognition', label: 'Word timing via WhisperX', sub: 'Forced phoneme alignment — accurate per-word timestamps', ...whisperState },
-    ];
-    return (<div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}><p style={{ fontWeight: 700, fontSize: 17, marginBottom: 2 }}>Processing "{title}"…</p><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Both steps run in parallel. Usually 2–5 minutes.</p>{steps.map(step => (<div key={step.key} className="step-row"><i className={`ti ${step.icon}${step.status === 'running' ? ' spin' : ''}`} style={{ color: step.status === 'done' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }} aria-hidden="true" /><div className="step-info"><div className="step-title">{step.label}</div><div className="step-sub">{step.sub}</div></div><div className="step-status" style={{ color: step.status === 'done' ? '#20bf6b' : step.status === 'error' ? 'var(--rose)' : 'var(--muted)' }}>{step.status === 'done' ? '✓ Done' : step.status === 'error' ? 'Failed' : step.status === 'running' ? fmt(step.elapsed) : '…'}</div></div>))}<button className="btn btn-secondary" onClick={() => { cancelRef.current.aborted = true; setStage('idle'); }}><i className="ti ti-x" aria-hidden="true" /> Cancel</button></div>);
-  }
-
-  if (stage === 'review' && result) return (
-    <div className="screen" style={{ padding: '16px 18px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <p style={{ fontWeight: 700, fontSize: 17, margin: '6px 0 0' }}>Review & save</p>
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className={`ti ${result.instrumentalUrl ? 'ti-check' : 'ti-alert-triangle'}`} style={{ fontSize: 20, color: result.instrumentalUrl ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" /><div><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.instrumentalUrl ? 'Karaoke track saved' : 'Vocal separation failed'}</p>{result.vocalsUrl && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>Vocal stem saved — guide vocals available</p>}{result.demucsErr && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>{result.demucsErr}</p>}</div></div>
-        <div className="divider" style={{ margin: 0 }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className={`ti ${result.lyrics.length > 0 ? 'ti-check' : 'ti-alert-triangle'}`} style={{ fontSize: 20, color: result.lyrics.length > 0 ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" /><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.lyrics.length > 0 ? `${result.lyrics.length} lines${result.hadLrc ? ' (LRClib lines + Whisper words)' : ' (Whisper)'}` : 'No lyrics extracted'}</p></div>
-      </div>
-      {result.lyrics.length > 0 && (<div className="card" style={{ padding: '12px 14px' }}><span className="card-label">Lyrics preview</span><div style={{ maxHeight: 170, overflowY: 'auto' }}>{result.lyrics.slice(0, 10).map((l, i) => (<div key={i} style={{ display: 'flex', gap: 10, borderBottom: '1px solid var(--border)', padding: '3px 0', fontSize: 13 }}><span style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>{fmt(l.time)}</span><span>{l.text}</span></div>))}{result.lyrics.length > 10 && <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>…and {result.lyrics.length - 10} more lines</p>}</div></div>)}
-      {!result.lyrics.length && (<div className="card"><span className="card-label">Paste lyrics manually</span><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder="Paste lyrics here…" rows={6} /></div>)}
-      <p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> Use ✏️ on any song in the library to correct lyrics after saving</p>
-      <button className="btn btn-process btn-full" onClick={handleSave}><i className="ti ti-device-floppy" aria-hidden="true" /> Save "{title}" to library</button>
+  if (stage === 'uploading') return (
+    <div className="screen" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, textAlign: 'center', padding: '0 32px' }}>
+      <i className="ti ti-cloud-upload spin" style={{ fontSize: 40, color: 'var(--muted)' }} aria-hidden="true" />
+      <p style={{ fontWeight: 700, fontSize: 16 }}>Uploading "{title}"…</p>
     </div>
   );
 
-  if (stage === 'error') return (<div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}><div className="warn-box"><p style={{ fontWeight: 700, marginBottom: 6 }}><i className="ti ti-alert-triangle" aria-hidden="true" /> Processing failed</p><p style={{ margin: 0, wordBreak: 'break-word' }}>{errorMsg}</p><p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8, lineHeight: 1.6 }}>Check REPLICATE_API_TOKEN in Vercel env vars and that your account has credits.</p></div><button className="btn btn-secondary btn-full" onClick={() => { setStage('idle'); setErrorMsg(''); }}><i className="ti ti-refresh" aria-hidden="true" /> Try again</button></div>);
+  if (stage === 'processing') {
+    const claudeSub = lrcFound
+      ? 'Claude maps correct lyrics text to WhisperX timestamps'
+      : 'Skipped — no LRClib reference available';
+    const steps = [
+      { key: 'demucs',  icon: 'ti-scissors',        label: 'Separating vocals',      sub: 'Demucs — saves instrumental + vocal stem', ...demucsState },
+      { key: 'whisper', icon: 'ti-text-recognition', label: 'Word timing via WhisperX', sub: 'Forced phoneme alignment — per-word timestamps', ...whisperState },
+      { key: 'claude',  icon: 'ti-sparkles',         label: 'AI lyrics correction',   sub: claudeSub, ...claudeState },
+    ];
+    const statusColour = s => s === 'done' ? '#20bf6b' : s === 'error' ? 'var(--rose)' : s === 'skipped' ? 'var(--muted)' : 'var(--muted)';
+    const statusText   = s => s === 'done' ? '✓ Done' : s === 'error' ? 'Failed' : s === 'skipped' ? 'Skipped' : s === 'running' ? '…' : '…';
+    return (
+      <div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <p style={{ fontWeight: 700, fontSize: 17, marginBottom: 2 }}>Processing "{title}"…</p>
+        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Demucs and WhisperX run in parallel. AI correction follows WhisperX.</p>
+        {steps.map(step => (
+          <div key={step.key} className="step-row">
+            <i className={`ti ${step.icon}${step.status === 'running' ? ' spin' : ''}`} style={{ color: statusColour(step.status) }} aria-hidden="true" />
+            <div className="step-info"><div className="step-title">{step.label}</div><div className="step-sub">{step.sub}</div></div>
+            <div className="step-status" style={{ color: statusColour(step.status) }}>
+              {step.status === 'running' ? fmt(step.elapsed) : statusText(step.status)}
+            </div>
+          </div>
+        ))}
+        <button className="btn btn-secondary" onClick={() => { cancelRef.current.aborted = true; setStage('idle'); }}><i className="ti ti-x" aria-hidden="true" /> Cancel</button>
+      </div>
+    );
+  }
+
+  if (stage === 'review' && result) {
+    const primaryWordCount = result.lyrics.reduce((n, l) => n + (l.words?.length || 0), 0);
+    const altWordCount     = result.lyricsAlt.reduce((n, l) => n + (l.words?.length || 0), 0);
+    return (
+      <div className="screen" style={{ padding: '16px 18px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <p style={{ fontWeight: 700, fontSize: 17, margin: '6px 0 0' }}>Review & save</p>
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <i className={`ti ${result.instrumentalUrl ? 'ti-check' : 'ti-alert-triangle'}`} style={{ fontSize: 20, color: result.instrumentalUrl ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" />
+            <div><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.instrumentalUrl ? 'Karaoke track saved' : 'Vocal separation failed'}</p>{result.vocalsUrl && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>Vocal stem saved</p>}</div>
+          </div>
+          <div className="divider" style={{ margin: 0 }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <i className={`ti ${primaryWordCount > 0 ? 'ti-check' : result.lyrics.length > 0 ? 'ti-alert-triangle' : 'ti-x'}`} style={{ fontSize: 20, color: primaryWordCount > 0 ? '#20bf6b' : result.lyrics.length > 0 ? 'var(--amber)' : 'var(--rose)', flexShrink: 0 }} aria-hidden="true" />
+            <div>
+              <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>
+                {result.claudeApplied ? 'AI-corrected lyrics' : result.hadLrc ? 'LRClib fallback (Claude failed)' : 'WhisperX transcription'}
+                {' — '}{result.lyrics.length} lines{primaryWordCount > 0 ? `, ${primaryWordCount} words` : ''}
+              </p>
+              {altWordCount > 0 && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>WhisperX backup also saved ({altWordCount} words) — toggle in editor</p>}
+            </div>
+          </div>
+        </div>
+        {result.lyrics.length > 0 && (
+          <div className="card" style={{ padding: '12px 14px' }}>
+            <span className="card-label">Preview (primary source)</span>
+            <div style={{ maxHeight: 170, overflowY: 'auto' }}>
+              {result.lyrics.slice(0, 10).map((l, i) => (
+                <div key={i} style={{ display: 'flex', gap: 10, borderBottom: '1px solid var(--border)', padding: '3px 0', fontSize: 13 }}>
+                  <span style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>{fmt(l.time)}</span>
+                  <span>{l.text}</span>
+                </div>
+              ))}
+              {result.lyrics.length > 10 && <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>…and {result.lyrics.length - 10} more lines</p>}
+            </div>
+          </div>
+        )}
+        <p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> Use ✏️ to edit lyrics. If AI-corrected looks wrong, toggle to WhisperX in the editor.</p>
+        <button className="btn btn-process btn-full" onClick={handleSave}><i className="ti ti-device-floppy" aria-hidden="true" /> Save "{title}" to library</button>
+      </div>
+    );
+  }
+
+  if (stage === 'error') return (
+    <div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="warn-box"><p style={{ fontWeight: 700, marginBottom: 6 }}><i className="ti ti-alert-triangle" aria-hidden="true" /> Processing failed</p><p style={{ margin: 0, wordBreak: 'break-word' }}>{errorMsg}</p></div>
+      <button className="btn btn-secondary btn-full" onClick={() => { setStage('idle'); setErrorMsg(''); }}><i className="ti ti-refresh" aria-hidden="true" /> Try again</button>
+    </div>
+  );
 
   return (
     <div className="screen" style={{ padding: '8px 18px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div className="mode-tabs">{['auto', 'manual'].map(m => (<button key={m} className={`mode-tab${mode === m ? ' active' : ''}`} onClick={() => setMode(m)}><i className={`ti ${m === 'auto' ? 'ti-sparkles' : 'ti-upload'}`} aria-hidden="true" style={{ marginRight: 5, fontSize: 13 }} />{m === 'auto' ? 'Auto · Replicate' : 'Manual'}</button>))}</div>
       <div className="card"><span className="card-label">Song details</span><div className="field"><input placeholder="Song title *" value={title} onChange={e => setTitle(e.target.value)} /></div><div className="field"><input placeholder="Artist name" value={artist} onChange={e => setArtist(e.target.value)} /></div></div>
-      {mode === 'auto' && (<><div className="card"><span className="card-label">Upload original song</span><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Demucs separates vocal stem + instrumental (both saved permanently). Whisper transcribes with word timing. Original deleted after.</p><label className={`upload-zone${origFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} /><i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}</label></div><div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first for line structure. Whisper always runs for word-level timing.</div><button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}><i className="ti ti-sparkles" aria-hidden="true" /> Process with Replicate</button></>)}
-      {mode === 'manual' && (<><div className="card"><span className="card-label">Lyrics</span><button className="btn btn-secondary btn-full" style={{ marginBottom: 12 }} onClick={async () => { if (!title.trim()) return; const res = await lrcSearch(artist, title); if (res?.plain) setLyricsText(res.plain); else alert('Not found on LRClib. Paste manually or use Auto mode.'); }}><i className="ti ti-search" aria-hidden="true" /> Search LRClib</button><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder={"Paste lyrics here…\n\nOr LRC format:\n[00:12.34]First line"} rows={7} /></div><div className="card"><span className="card-label">Instrumental track</span><label className={`upload-zone${instrFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setInstrFile(e.target.files[0])} /><i className={`ti ${instrFile ? 'ti-check' : 'ti-music'}`} style={{ color: instrFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{instrFile ? <p className="filename">{instrFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Upload karaoke / instrumental</p><p>MP3, WAV, M4A</p></>}</label></div><button className="btn btn-primary btn-full" onClick={handleSave} disabled={!title.trim()}><i className="ti ti-plus" aria-hidden="true" /> Add to library</button></>)}
+      {mode === 'auto' && (<><div className="card"><span className="card-label">Upload original song</span><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Demucs separates vocals. WhisperX aligns word timestamps. Claude corrects text using LRClib. Original deleted after.</p><label className={`upload-zone${origFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} /><i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}</label></div><div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first for correct lyrics text. WhisperX provides timing. Claude combines both.</div><button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}><i className="ti ti-sparkles" aria-hidden="true" /> Process with Replicate + AI</button></>)}
+      {mode === 'manual' && (<><div className="card"><span className="card-label">Lyrics</span><button className="btn btn-secondary btn-full" style={{ marginBottom: 12 }} onClick={async () => { if (!title.trim()) return; const res = await lrcSearch(artist, title); if (res?.plain) setLyricsText(res.plain); else alert('Not found on LRClib.'); }}><i className="ti ti-search" aria-hidden="true" /> Search LRClib</button><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder={"Paste lyrics here…\n\nOr LRC format:\n[00:12.34]First line"} rows={7} /></div><div className="card"><span className="card-label">Instrumental track</span><label className={`upload-zone${instrFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setInstrFile(e.target.files[0])} /><i className={`ti ${instrFile ? 'ti-check' : 'ti-music'}`} style={{ color: instrFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{instrFile ? <p className="filename">{instrFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Upload karaoke / instrumental</p><p>MP3, WAV, M4A</p></>}</label></div><button className="btn btn-primary btn-full" onClick={handleSave} disabled={!title.trim()}><i className="ti ti-plus" aria-hidden="true" /> Add to library</button></>)}
     </div>
   );
 }
@@ -462,10 +650,10 @@ function AddSongScreen({ onSave }) {
 
 // ── PLAYER SCREEN ─────────────────────────────────────────────────────────────
 function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack, onSongEnd, onStartRandom, onStopRandom, onSkipRandom, onGoToPrevious }) {
-  const audioRef   = useRef(null);
-  const guideRef   = useRef(null);
-  const rafRef     = useRef(null);
-  const stateRef   = useRef({});
+  const audioRef  = useRef(null);
+  const guideRef  = useRef(null);
+  const rafRef    = useRef(null);
+  const stateRef  = useRef({});
 
   const [playing, setPlaying]             = useState(false);
   const [currentTime, setCurrentTime]     = useState(0);
@@ -475,28 +663,17 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   const [guideExpanded, setGuideExpanded] = useState(false);
   const [playError, setPlayError]         = useState(null);
 
-  // Responsive — true on desktop (≥768px), triggers cinematic layout
   const [isCinematic, setIsCinematic] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
-  useEffect(() => {
-    const check = () => setIsCinematic(window.innerWidth >= 768);
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
+  useEffect(() => { const check = () => setIsCinematic(window.innerWidth >= 768); window.addEventListener('resize', check); return () => window.removeEventListener('resize', check); }, []);
 
   stateRef.current = { playing, currentTime, duration, randomMode, guideVolume };
 
-  // ── Reset on song change ───────────────────────────────────────────────────
   useEffect(() => {
     setPlaying(false); setCurrentTime(0); setDuration(0); setActiveLine(-1);
-    setGuideExpanded(false); setGuideVolume(settings?.defaultGuideVolume ?? 0);
-    setPlayError(null);
-    if (autoPlay) {
-      const t = setTimeout(() => setPlaying(true), 150);
-      return () => clearTimeout(t);
-    }
+    setGuideExpanded(false); setGuideVolume(settings?.defaultGuideVolume ?? 0); setPlayError(null);
+    if (autoPlay) { const t = setTimeout(() => setPlaying(true), 150); return () => clearTimeout(t); }
   }, [song.id]);
 
-  // ── Audio metadata ─────────────────────────────────────────────────────────
   useEffect(() => {
     const a = audioRef.current; if (!a) return;
     const onMeta = () => setDuration(a.duration);
@@ -505,31 +682,14 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     return () => { a.removeEventListener('loadedmetadata', onMeta); a.removeEventListener('ended', onEnd); };
   }, [song.id]);
 
-  // ── Play / pause ───────────────────────────────────────────────────────────
   useEffect(() => {
     const main = audioRef.current; const guide = guideRef.current; if (!main) return;
     if (playing) {
-      main.play().catch(err => {
-        console.error('Playback failed:', err.message, song.audioUrl);
-        setPlaying(false);
-        if (song.audioUrl?.startsWith('blob:')) {
-          setPlayError('Audio expired — this song was added in an older session. Re-add it using Auto mode to fix this permanently.');
-        } else {
-          setPlayError(`Could not play audio. (${err.message})`);
-        }
-      });
+      main.play().catch(err => { console.error('Playback failed:', err.message); if (song.audioUrl?.startsWith('blob:')) console.warn('Expired blob URL — re-add this song'); setPlaying(false); setPlayError(song.audioUrl?.startsWith('blob:') ? 'Audio expired — re-add this song to fix.' : `Could not play. (${err.message})`); });
       if (guide && guideVolume > 0) { guide.currentTime = main.currentTime; guide.play().catch(() => {}); }
       const tick = () => {
-        const t = main.currentTime;
-        setCurrentTime(t);
-        if (song.lyrics?.length > 0) {
-          // Active line = last line whose start time has passed
-          let idx = -1;
-          for (let i = 0; i < song.lyrics.length; i++) {
-            if (song.lyrics[i].time <= t) idx = i; else break;
-          }
-          setActiveLine(idx);
-        }
+        const t = main.currentTime; setCurrentTime(t);
+        if (song.lyrics?.length > 0) { let idx = -1; for (let i = 0; i < song.lyrics.length; i++) { if (song.lyrics[i].time <= t) idx = i; else break; } setActiveLine(idx); }
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
@@ -537,7 +697,6 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     return () => cancelAnimationFrame(rafRef.current);
   }, [playing]);
 
-  // ── Guide volume ───────────────────────────────────────────────────────────
   useEffect(() => {
     const guide = guideRef.current; if (!guide) return;
     guide.volume = guideVolume;
@@ -545,7 +704,6 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     else if (guideVolume === 0) guide.pause();
   }, [guideVolume]);
 
-  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
     function onKey(e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -564,61 +722,28 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  // ── Handlers ───────────────────────────────────────────────────────────────
   function seek(e) { const r = e.currentTarget.getBoundingClientRect(); const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (duration || 0); if (audioRef.current) audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); }
   function handleRestart() { if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); } if (guideRef.current) guideRef.current.currentTime = 0; }
   function handleSkip() { if (randomMode) { onSkipRandom?.(); return; } if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); } }
 
-  // ── Shared render pieces ───────────────────────────────────────────────────
-  const lyrics     = song.lyrics || [];
-  const hasWords   = lyrics.some(l => l.words?.length > 0);
-  const pct        = duration > 0 ? (currentTime / duration) * 100 : 0;
-  const c          = songColor(song);
+  const lyrics   = song.lyrics || [];
+  const hasWords = lyrics.some(l => l.words?.length > 0);
+  const pct      = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const c        = songColor(song);
   const showNextUp = !!nextUpSong && duration > 0 && (duration - currentTime) <= 20 && (duration - currentTime) > 0;
 
-  // For songs without word timestamps, distribute the line's duration
-  // evenly across its words — good enough for a smooth colour wash.
-  // Colour wash: word-by-word for Whisper-processed songs (real timestamps),
-  // plain text for everything else. No estimation — fake timing causes more
-  // confusion than it solves.
   function renderActiveLine(line) {
     if (!line) return '\u00A0';
     const lineColor = line.color || 'var(--amber)';
-
     if (line.words?.length > 0) {
-      // Real word timestamps from Whisper — colour wash each word
-      return (
-        <span>
-          {line.words.map((w, i) => {
-            let color;
-            if (currentTime >= w.end)        color = 'rgba(237,233,224,0.18)';          // sung — dim
-            else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); // active — pale
-            else                             color = lineColor;                          // upcoming — full
-            return (
-              <span key={i} style={{ color, transition: 'color 0.1s' }}>
-                {w.word}{i < line.words.length - 1 ? ' ' : ''}
-              </span>
-            );
-          })}
-        </span>
-      );
+      return (<span>{line.words.map((w, i) => { let color; if (currentTime >= w.end) color = 'rgba(237,233,224,0.18)'; else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); else color = lineColor; return <span key={i} style={{ color, transition: 'color 0.1s' }}>{w.word}{i < line.words.length - 1 ? ' ' : ''}</span>; })}</span>);
     }
-
-    // No word timestamps — show line text in its colour, no word animation
     return line.text;
   }
 
-  const audioEls = (<>
-    {song.audioUrl  && <audio ref={audioRef} src={song.audioUrl}  preload="metadata" />}
-    {song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="metadata" />}
-  </>);
+  const audioEls = (<>{song.audioUrl && <audio ref={audioRef} src={song.audioUrl} preload="metadata" />}{song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="metadata" />}</>);
 
-  const randomBand = randomMode && (
-    <div className="random-band">
-      <div className="random-band-label"><i className="ti ti-arrows-shuffle" style={{ fontSize: 14 }} aria-hidden="true" /> Random mode</div>
-      <button className="random-stop-btn" onClick={onStopRandom} aria-label="Stop random mode"><i className="ti ti-x" style={{ fontSize: 11 }} aria-hidden="true" /> Stop</button>
-    </div>
-  );
+  const randomBand = randomMode && (<div className="random-band"><div className="random-band-label"><i className="ti ti-arrows-shuffle" style={{ fontSize: 14 }} aria-hidden="true" /> Random mode</div><button className="random-stop-btn" onClick={onStopRandom} aria-label="Stop random mode"><i className="ti ti-x" style={{ fontSize: 11 }} aria-hidden="true" /> Stop</button></div>);
 
   const lyricsArea = (
     <div className="lyrics-area">
@@ -628,57 +753,24 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         const currentLine   = lyrics[activeLine];
         const nextLine      = lyrics[activeLine + 1];
         const timeToNext    = nextLine ? nextLine.time - currentTime : null;
-
-        // Break duration = from end of singing (last word end, or line start as fallback)
-        // to start of next line. This is stable — doesn't change as time passes.
-        const lastWordEnd   = currentLine?.words?.length > 0
-          ? currentLine.words[currentLine.words.length - 1].end
-          : null;
+        const lastWordEnd   = currentLine?.words?.length > 0 ? currentLine.words[currentLine.words.length - 1].end : null;
         const singEnd       = lastWordEnd ?? currentLine?.time ?? 0;
         const totalBreak    = nextLine ? nextLine.time - singEnd : 0;
-
-        // Show break info when:
-        //   - Total break is ≥20s (a real musical break, not just a pause between lines)
-        //   - We're past the end of singing
-        //   - The next line hasn't started yet
-        const pastSinging   = lastWordEnd ? currentTime >= lastWordEnd
-                                          : (currentTime - (currentLine?.time ?? 0)) >= 2;
-        const inBreak       = activeLine >= 0 && nextLine !== undefined
-                              && totalBreak >= 20
-                              && pastSinging
-                              && timeToNext !== null && timeToNext > 0;
+        const pastSinging   = lastWordEnd ? currentTime >= lastWordEnd : (currentTime - (currentLine?.time ?? 0)) >= 2;
+        const inBreak       = activeLine >= 0 && nextLine !== undefined && totalBreak >= 20 && pastSinging && timeToNext !== null && timeToNext > 0;
         const breakDuration = inBreak ? Math.round(totalBreak) : 0;
-        const classMap = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' };
-
+        const classMap      = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' };
         return (
           <>
             {[-2,-1,0].map(off => {
               const line      = lyrics[activeLine + off];
               const isCur     = off === 0;
               const lineColor = line?.color || 'var(--amber)';
-              // During a break the last-sung line dims to 'past' — it's already done
-              const cls = (isCur && inBreak) ? 'past' : classMap[String(off)];
-              return (
-                <div key={off} className={`lyric-line ${cls}`}
-                  style={(isCur && !inBreak) ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>
-                  {isCur ? renderActiveLine(line) : (line ? line.text : '\u00A0')}
-                </div>
-              );
+              const cls       = (isCur && inBreak) ? 'past' : classMap[String(off)];
+              return (<div key={off} className={`lyric-line ${cls}`} style={(isCur && !inBreak) ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{isCur ? renderActiveLine(line) : (line ? line.text : '\u00A0')}</div>);
             })}
-            {inBreak && (
-              <div className="lyric-break-info">
-                Musical break — {breakDuration}s
-              </div>
-            )}
-            {[1,2].map(off => {
-              const line = lyrics[activeLine + off];
-              const cls  = classMap[String(off)];
-              return (
-                <div key={off} className={`lyric-line ${cls}`}>
-                  {line ? line.text : '\u00A0'}
-                </div>
-              );
-            })}
+            {inBreak && <div className="lyric-break-info">Musical break — {breakDuration}s</div>}
+            {[1,2].map(off => { const line = lyrics[activeLine + off]; return (<div key={off} className={`lyric-line ${classMap[String(off)]}`}>{line ? line.text : '\u00A0'}</div>); })}
           </>
         );
       })()}
@@ -687,75 +779,37 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
 
   const nextUpCard = showNextUp && (() => { const nc = songColor(nextUpSong); return (<div className="next-up-card" onClick={() => onSkipRandom?.()}><div className="song-avatar" style={{ background: nc.bg, color: nc.fg, width: 36, height: 36, fontSize: 15, flexShrink: 0 }}>{nextUpSong.title[0]?.toUpperCase()}</div><div style={{ flex: 1, minWidth: 0 }}><p className="next-up-label">Up next</p><p className="next-up-title">{nextUpSong.title}</p><p className="next-up-artist">{nextUpSong.artist}</p></div><i className="ti ti-chevron-right" style={{ fontSize: 16, color: 'var(--muted)', flexShrink: 0 }} aria-hidden="true" /></div>); })();
 
-  const playBtn = (
-    <button className="play-btn" onClick={() => setPlaying(p => !p)}
-      disabled={!song.audioUrl} aria-label={playing ? 'Pause' : 'Play'}>
-      <i className={`ti ${playing ? 'ti-player-pause' : 'ti-player-play'}`} aria-hidden="true" />
-    </button>
-  );
+  const playBtn = (<button className="play-btn" onClick={() => setPlaying(p => !p)} disabled={!song.audioUrl} aria-label={playing ? 'Pause' : 'Play'}><i className={`ti ${playing ? 'ti-player-pause' : 'ti-player-play'}`} aria-hidden="true" /></button>);
 
   const hintLine = <p style={{ textAlign: 'center', fontSize: 10, color: 'rgba(91,98,128,0.4)', padding: '0 0 8px', margin: 0 }}>Space · Esc · ← → · M · R · F</p>;
 
-  // ── CINEMATIC LAYOUT (desktop ≥768px) ──────────────────────────────────────
-  if (isCinematic) {
-    return (
-      <div className="player-screen" style={{ display: 'flex', flexDirection: 'column', height: '100dvh' }}>
-        {audioEls}
-        {randomBand}
-
-        {/* Compact title bar */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 28px', borderBottom: '0.5px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
-          <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
-          <p style={{ flex: 1, fontSize: 14, color: 'rgba(200,205,230,0.65)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {song.title}{song.artist ? ` — ${song.artist}` : ''}
-          </p>
-          {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
-          {hasWords && <span className="badge badge-teal badge-xs" style={{flexShrink:0}}>⚡ Words</span>}
-        </div>
-
-        {/* Lyrics — takes all remaining space, large fonts via CSS */}
-        {playError && (
-          <div style={{ margin: '0 28px 8px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>
-            {playError}
-          </div>
-        )}
-        {lyricsArea}
-
-        {/* Next-up card */}
-        {nextUpCard}
-
-        {/* Guide slider — appears above the bottom bar when expanded */}
-        {guideExpanded && (
-          <div className="cinematic-guide-panel">
-            <i className="ti ti-microphone" style={{ fontSize: 18, color: guideVolume > 0 ? 'var(--amber)' : 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
-            <input type="range" min="0" max="1" step="0.02" value={guideVolume} onChange={e => setGuideVolume(parseFloat(e.target.value))} className="guide-slider" aria-label="Guide vocals volume" />
-            <span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}</span>
-          </div>
-        )}
-
-        {/* Cinematic bottom bar — all controls in one strip */}
-        <div className="cinematic-bar">
-          <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart"><i className="ti ti-player-skip-back" aria-hidden="true" /></button>
-          {playBtn}
-          <button className="ctrl-btn" onClick={handleSkip} aria-label={randomMode ? 'Next random' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
-          <div className="cinematic-progress" onClick={seek}><div className="cinematic-fill" style={{ width: `${pct}%` }} /></div>
-          <span className="cinematic-time">{fmt(currentTime)} / {fmt(duration)}</span>
-          <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals">
-            <i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />
-            {guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}
-          </button>
-        </div>
-
-        {hintLine}
+  if (isCinematic) return (
+    <div className="player-screen" style={{ display: 'flex', flexDirection: 'column', height: '100dvh' }}>
+      {audioEls}{randomBand}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 28px', borderBottom: '0.5px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
+        <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
+        <p style={{ flex: 1, fontSize: 14, color: 'rgba(200,205,230,0.65)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.title}{song.artist ? ` — ${song.artist}` : ''}</p>
+        {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
+        {hasWords && <span className="badge badge-teal badge-xs" style={{ flexShrink: 0 }}>⚡ Words</span>}
       </div>
-    );
-  }
+      {playError && (<div style={{ margin: '0 28px 8px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>{playError}</div>)}
+      {lyricsArea}{nextUpCard}
+      {guideExpanded && (<div className="cinematic-guide-panel"><i className="ti ti-microphone" style={{ fontSize: 18, color: guideVolume > 0 ? 'var(--amber)' : 'var(--muted)', flexShrink: 0 }} aria-hidden="true" /><input type="range" min="0" max="1" step="0.02" value={guideVolume} onChange={e => setGuideVolume(parseFloat(e.target.value))} className="guide-slider" aria-label="Guide vocals volume" /><span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}</span></div>)}
+      <div className="cinematic-bar">
+        <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart"><i className="ti ti-player-skip-back" aria-hidden="true" /></button>
+        {playBtn}
+        <button className="ctrl-btn" onClick={handleSkip} aria-label={randomMode ? 'Next random' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
+        <div className="cinematic-progress" onClick={seek}><div className="cinematic-fill" style={{ width: `${pct}%` }} /></div>
+        <span className="cinematic-time">{fmt(currentTime)} / {fmt(duration)}</span>
+        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
+      </div>
+      {hintLine}
+    </div>
+  );
 
-  // ── MOBILE LAYOUT ──────────────────────────────────────────────────────────
   return (
     <div className="player-screen">
-      {audioEls}
-      {randomBand}
+      {audioEls}{randomBand}
       <div className="player-header">
         <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
         <div className="song-avatar" style={{ background: c.bg, color: c.fg, width: 44, height: 44, fontSize: 18 }}>{song.title[0]?.toUpperCase()}</div>
@@ -763,19 +817,11 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
         {hasWords && <span className="badge badge-teal badge-xs">⚡ Words</span>}
       </div>
-      {playError && (
-        <div style={{ margin: '0 20px 6px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>
-          {playError}
-        </div>
-      )}
-      {lyricsArea}
-      {nextUpCard}
+      {playError && (<div style={{ margin: '0 20px 6px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>{playError}</div>)}
+      {lyricsArea}{nextUpCard}
       <div className="progress-wrap"><div className="progress-track" onClick={seek}><div className="progress-fill" style={{ width: `${pct}%` }} /></div><div className="time-row"><span>{fmt(currentTime)}</span><span>{fmt(duration)}</span></div></div>
       <div className="guide-panel">
-        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals">
-          <i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />
-          {guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}
-        </button>
+        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
         {guideExpanded && (<div className="guide-slider-wrap"><span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}</span><input type="range" min="0" max="1" step="0.02" value={guideVolume} onChange={e => setGuideVolume(parseFloat(e.target.value))} className="guide-slider" aria-label="Guide vocals volume" /></div>)}
       </div>
       <div className="controls">
@@ -796,41 +842,11 @@ function SettingsScreen({ settings, onSettingsChange }) {
     <div className="screen">
       <div className="page-header"><div><div className="page-title">Settings</div><div className="page-sub">App configuration</div></div></div>
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div className={hasSupabase ? 'success-box' : 'warn-box'}>
-          <p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className={`ti ${hasSupabase ? 'ti-check' : 'ti-alert-triangle'}`} aria-hidden="true" /> Supabase — {hasSupabase ? 'connected' : 'not configured'}</p>
-          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{hasSupabase ? 'Songs and audio files saved to cloud. Deleted songs archived to deleted/ folder.' : 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.'}</p>
-        </div>
-        <div className="card">
-          <span className="card-label">Guide vocals — default level</span>
-          <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Starting volume when a song opens. Adjust live with the 🎤 button or M key.</p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <i className="ti ti-microphone" style={{ fontSize: 18, color: settings.defaultGuideVolume > 0 ? 'var(--amber)' : 'var(--muted)' }} aria-hidden="true" />
-            <input type="range" min="0" max="1" step="0.05" value={settings.defaultGuideVolume ?? 0} onChange={e => onSettingsChange({ defaultGuideVolume: parseFloat(e.target.value) })} style={{ flex: 1 }} />
-            <span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>{settings.defaultGuideVolume > 0 ? `${Math.round((settings.defaultGuideVolume ?? 0) * 100)}%` : 'Off'}</span>
-          </div>
-        </div>
-        <div className="card">
-          <span className="card-label">After a song finishes</span>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
-            {[{ value: false, label: 'Stop playing', sub: 'Player pauses at the end (default)' }, { value: true, label: 'Play next random song', sub: 'Picks a random song automatically' }].map(opt => (
-              <label key={String(opt.value)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '4px 0' }}>
-                <div style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '2px solid', borderColor: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'var(--border)', background: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{(settings.autoPlayRandom ?? false) === opt.value && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />}</div>
-                <div><p style={{ fontSize: 14, margin: 0 }}>{opt.label}</p><p style={{ fontSize: 11, color: 'var(--muted)', margin: '1px 0 0' }}>{opt.sub}</p></div>
-                <input type="radio" style={{ display: 'none' }} checked={(settings.autoPlayRandom ?? false) === opt.value} onChange={() => onSettingsChange({ autoPlayRandom: opt.value })} />
-              </label>
-            ))}
-          </div>
-        </div>
-        <div className="card">
-          <span className="card-label">Keyboard shortcuts</span>
-          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 13 }}>
-            {[['Space','Play / pause'],['Esc','Close player'],['←','Restart (or prev song if within 2s)'],['→','Skip +10s (or next random)'],['M','Toggle guide vocals mute'],['R','Toggle random mode'],['F','Fullscreen']].map(([k,v]) => (
-              <><span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span><span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span></>
-            ))}
-          </div>
-        </div>
-        <div className="success-box"><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Replicate — server-side</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Demucs + Whisper via <code>/api/replicate</code>. API key in Vercel env vars.</p></div>
-        <div className="card"><span className="card-label">Roadmap</span><p className="pin-note" style={{ marginBottom: 8 }}><i className="ti ti-pin" aria-hidden="true" /> v1.3 — Background image gallery per song</p><p className="pin-note" style={{ marginBottom: 8 }}><i className="ti ti-pin" aria-hidden="true" /> v1.4 — Pitch / key shift + mic reverb</p><p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> v1.5 — Queue / playlist mode</p></div>
+        <div className={hasSupabase ? 'success-box' : 'warn-box'}><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className={`ti ${hasSupabase ? 'ti-check' : 'ti-alert-triangle'}`} aria-hidden="true" /> Supabase — {hasSupabase ? 'connected' : 'not configured'}</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{hasSupabase ? 'Songs and audio saved to cloud. Deleted songs archived.' : 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.'}</p></div>
+        <div className="card"><span className="card-label">Guide vocals — default level</span><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className="ti ti-microphone" style={{ fontSize: 18, color: settings.defaultGuideVolume > 0 ? 'var(--amber)' : 'var(--muted)' }} aria-hidden="true" /><input type="range" min="0" max="1" step="0.05" value={settings.defaultGuideVolume ?? 0} onChange={e => onSettingsChange({ defaultGuideVolume: parseFloat(e.target.value) })} style={{ flex: 1 }} /><span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>{settings.defaultGuideVolume > 0 ? `${Math.round((settings.defaultGuideVolume ?? 0) * 100)}%` : 'Off'}</span></div></div>
+        <div className="card"><span className="card-label">After a song finishes</span><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>{[{ value: false, label: 'Stop playing', sub: 'Player pauses at the end (default)' }, { value: true, label: 'Play next random song', sub: 'Picks a random song automatically' }].map(opt => (<label key={String(opt.value)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '4px 0' }}><div style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '2px solid', borderColor: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'var(--border)', background: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{(settings.autoPlayRandom ?? false) === opt.value && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />}</div><div><p style={{ fontSize: 14, margin: 0 }}>{opt.label}</p><p style={{ fontSize: 11, color: 'var(--muted)', margin: '1px 0 0' }}>{opt.sub}</p></div><input type="radio" style={{ display: 'none' }} checked={(settings.autoPlayRandom ?? false) === opt.value} onChange={() => onSettingsChange({ autoPlayRandom: opt.value })} /></label>))}</div></div>
+        <div className="card"><span className="card-label">Keyboard shortcuts</span><div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 13 }}>{[['Space','Play / pause'],['Esc','Close player'],['←','Restart (or prev song if within 2s)'],['→','Skip +10s (or next random)'],['M','Toggle guide vocals mute'],['R','Toggle random mode'],['F','Fullscreen']].map(([k,v]) => (<><span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span><span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span></>))}</div></div>
+        <div className="success-box"><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Replicate + Claude — server-side</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Demucs + WhisperX via <code>/api/replicate</code>. Claude correction via <code>/api/claude</code>. Keys in Vercel env vars.</p></div>
       </div>
     </div>
   );
@@ -852,22 +868,13 @@ export default function App() {
   const songHistoryRef    = useRef([]);
 
   useEffect(() => { loadLibrary().then(loaded => { setSongs(loaded); setLoading(false); }); }, []);
-
-  useEffect(() => {
-    if (randomMode && activeSong && songs.length > 1) setNextUpSong(pickRandomSong(songs, activeSong.id));
-    else if (!randomMode) setNextUpSong(null);
-  }, [randomMode, activeSong?.id, songs.length]);
+  useEffect(() => { if (randomMode && activeSong && songs.length > 1) setNextUpSong(pickRandomSong(songs, activeSong.id)); else if (!randomMode) setNextUpSong(null); }, [randomMode, activeSong?.id, songs.length]);
 
   function navigateToSong(song) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = true; setActiveSong(song); }
   function handlePlaySong(song) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = false; if (randomMode) stopRandomMode(); setActiveSong(song); }
   function navigateToPrevious() { const prev = songHistoryRef.current[songHistoryRef.current.length - 1]; if (!prev) return; songHistoryRef.current = songHistoryRef.current.slice(0, -1); shouldAutoPlayRef.current = true; setActiveSong(prev); }
 
-  function handleSongEnd() {
-    if (randomMode) { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } }
-    if (settings.autoPlayRandom && songs.length > 1) { const next = pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } }
-    shouldAutoPlayRef.current = false;
-  }
-
+  function handleSongEnd() { if (randomMode) { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } if (settings.autoPlayRandom && songs.length > 1) { const next = pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } shouldAutoPlayRef.current = false; }
   function startRandomMode() { const first = pickRandomSong(songs, activeSong?.id); if (!first) return; setRandomMode(true); navigateToSong(first); }
   function stopRandomMode()  { setRandomMode(false); setNextUpSong(null); }
   function skipToNextRandom() { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) navigateToSong(next); }
@@ -879,7 +886,6 @@ export default function App() {
 
   if (editingSong) return (<div className="app-shell app-shell--wide"><EditorScreen song={editingSong} onSave={handleSaveEdited} onBack={() => setEditingSong(null)} /></div>);
 
-  // Player gets full-width shell so cinematic mode can use the whole viewport
   if (activeSong) return (
     <div className="app-shell app-shell--player">
       <PlayerScreen song={activeSong} settings={settings} autoPlay={shouldAutoPlayRef.current} randomMode={randomMode} nextUpSong={nextUpSong}

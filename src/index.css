@@ -797,3 +797,32 @@ textarea { resize: vertical; line-height: 1.7; }
     font-size: clamp(32px, 5.5vw, 62px); /* matches .lyric-line.active on desktop */
   }
 }
+
+/* ── Source toggle in editor ─────────────────────────────────────────────────── */
+.source-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--elevated);
+  border-radius: var(--radius);
+  padding: 3px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.source-tab {
+  flex: 1;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  border-radius: calc(var(--radius) - 2px);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: var(--font-ui);
+}
+.source-tab.active {
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
