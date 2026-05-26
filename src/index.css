@@ -826,3 +826,146 @@ textarea { resize: vertical; line-height: 1.7; }
   color: var(--text);
   box-shadow: 0 1px 3px rgba(0,0,0,0.25);
 }
+
+/* ── W/¶ lyric mode toggle ───────────────────────────────────────────── */
+.lyric-mode-toggle {
+  display: flex;
+  background: rgba(255,255,255,0.06);
+  border-radius: 5px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.lmt-btn {
+  padding: 4px 9px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  line-height: 1.2;
+  font-family: var(--font-ui);
+  transition: background 0.12s, color 0.12s;
+}
+.lmt-btn:hover:not(.lmt-active) { color: var(--text); }
+.lmt-btn.lmt-active { background: rgba(244,168,39,0.18); color: var(--amber); }
+
+/* ── Word chip editor in EditorScreen ───────────────────────────────── */
+.editor-text-derived {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  cursor: not-allowed;
+  overflow: hidden;
+}
+.word-chips-section {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.word-chips-hint {
+  font-size: 10px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.7;
+  margin: 0;
+}
+.word-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.word-chip {
+  background: var(--elevated);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.word-chip:hover { border-color: rgba(244,168,39,0.5); }
+.word-chip--sel { border-color: var(--amber); background: rgba(244,168,39,0.08); }
+.chip-word { font-size: 11px; font-weight: 700; color: var(--text); }
+.word-chip--sel .chip-word { color: var(--amber); }
+.chip-time { font-size: 9px; font-family: monospace; color: var(--muted); }
+.word-chip--sel .chip-time { color: rgba(244,168,39,0.7); }
+.chip-add-btn {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-ui);
+  align-self: stretch;
+}
+.chip-add-btn:hover { border-color: rgba(244,168,39,0.5); color: var(--text); }
+.chip-editor {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px 12px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.chip-field-group { display: flex; flex-direction: column; gap: 4px; }
+.chip-field-label {
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.chip-field {
+  background: var(--elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 8px;
+  font-family: var(--font-ui);
+}
+.chip-field--time {
+  font-family: monospace;
+  font-size: 13px;
+  width: 76px;
+  letter-spacing: 0.02em;
+}
+.chip-field:focus { outline: none; border-color: var(--amber); }
+/* W badge on collapsed lines */
+.word-w-badge {
+  width: 17px;
+  height: 17px;
+  border-radius: 3px;
+  background: var(--teal-dim, #0f3830);
+  color: var(--teal, #2BCBBA);
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+/* Purple badge for library */
+.badge-purple { background: #1e1540; color: #A55EEA; }

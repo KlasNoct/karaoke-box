@@ -257,6 +257,9 @@ function pickRandomSong(songs, excludeId) {
 const sleep     = ms => new Promise(r => setTimeout(r, ms));
 const fmt       = s  => (!s || isNaN(s)) ? '0:00' : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const parseTime = str => { if (!str) return 0; const p = String(str).trim().split(':'); return p.length === 2 ? (+p[0] || 0) * 60 + (+p[1] || 0) : +str || 0; };
+// Word-level time utilities: format as m:ss.d (one decimal)
+const fmtWordTime = s => { if (s == null || isNaN(s)) return ''; const m = Math.floor(s / 60); const sec = (s % 60).toFixed(1).padStart(4, '0'); return `${m}:${sec}`; };
+const parseWordTime = str => { if (!str) return 0; const p = String(str).trim().split(':'); return p.length === 2 ? parseFloat(p[0]) * 60 + parseFloat(p[1]) : parseFloat(str) || 0; };
 const uid = () => Math.random().toString(36).slice(2, 9);
 
 const AVATAR_COLORS = [{ bg: '#1a2a4a', fg: '#45aaf2' }, { bg: '#1a3a2a', fg: '#20bf6b' }, { bg: '#3a1a2a', fg: '#e8607a' }, { bg: '#3a2a0a', fg: '#f4a827' }];
@@ -291,6 +294,7 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
         {filtered.map(song => {
           const activeLyrics = (song.lyricsSource === 'alt' && song.lyricsAlt?.length > 0) ? song.lyricsAlt : song.lyrics;
           const hasWords = activeLyrics?.some(l => l.words?.length > 0);
+          const noAudio  = !song.hasAudio && !song.audioUrl;
           return (
             <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onPlay(song)}>
               <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
@@ -298,9 +302,9 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
                 <div className="song-artist">{song.artist || 'Unknown artist'}</div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, flexShrink: 0 }}>
-                {(song.hasAudio || song.audioUrl) && <span className="badge badge-green badge-xs">Ready</span>}
-                {song.lyricsType === 'synced' && <span className="badge badge-blue badge-xs">Synced</span>}
-                {hasWords && <span className="badge badge-teal badge-xs">Words</span>}
+                {noAudio && <span className="badge badge-amber badge-xs">No audio</span>}
+                {hasWords && <span className="badge badge-teal badge-xs">⚡ Words</span>}
+                {song.tuned && <span className="badge badge-purple badge-xs">✓ Tuned</span>}
               </div>
               <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
               <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${song.title}"?`)) onDelete(song); }} aria-label="Delete"><i className="ti ti-trash" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
@@ -322,33 +326,74 @@ function EditorScreen({ song, onSave, onBack }) {
   const [lines, setLines]             = useState(() => (song.lyrics || []).map(l => ({ id: uid(), color: null, words: [], ...l })));
   const [activeIdx, setActiveIdx]     = useState(null);
   const [saving, setSaving]           = useState(false);
+  const [tuned, setTuned]             = useState(song.tuned ?? false);
+  // Word chip editing
+  const [activeChipLine, setActiveChipLine] = useState(null);
+  const [activeChipIdx,  setActiveChipIdx]  = useState(null);
+  const [draftWord,  setDraftWord]  = useState('');
+  const [draftStart, setDraftStart] = useState('');
+  const [draftEnd,   setDraftEnd]   = useState('');
+
+  function selectChip(li, wi) {
+    const w = lines[li].words[wi];
+    setActiveChipLine(li); setActiveChipIdx(wi);
+    setDraftWord(w.word); setDraftStart(fmtWordTime(w.start)); setDraftEnd(fmtWordTime(w.end));
+  }
+  function commitChip(li, wi) {
+    if (li === null || wi === null) return;
+    setLines(prev => prev.map((line, i) => {
+      if (i !== li) return line;
+      const newWords = line.words.map((w, j) => j !== wi ? w : {
+        word: draftWord.trim() || w.word,
+        start: parseWordTime(draftStart),
+        end:   parseWordTime(draftEnd),
+      });
+      return { ...line, words: newWords, text: newWords.map(w => w.word).join(' '), time: newWords[0]?.start ?? line.time };
+    }));
+  }
+  function addWord(li) {
+    setLines(prev => {
+      const line = prev[li];
+      const last = line.words[line.words.length - 1];
+      const s = last ? last.end + 0.1 : line.time;
+      const newWord = { word: 'word', start: s, end: s + 0.5 };
+      const newWords = [...line.words, newWord];
+      const newIdx = newWords.length - 1;
+      setTimeout(() => selectChip(li, newIdx), 0);
+      return prev.map((l, i) => i !== li ? l : { ...l, words: newWords, text: newWords.map(w => w.word).join(' ') });
+    });
+  }
+  function deleteWord(li, wi) {
+    setLines(prev => prev.map((l, i) => {
+      if (i !== li) return l;
+      const newWords = l.words.filter((_, j) => j !== wi);
+      return { ...l, words: newWords, text: newWords.map(w => w.word).join(' '), time: newWords[0]?.start ?? l.time };
+    }));
+    setActiveChipIdx(null);
+  }
 
   function getSourceLines(useAlt) {
     const src = useAlt ? (song.lyricsAlt || []) : (song.lyrics || []);
     return src.map(l => ({ id: uid(), color: null, words: [], ...l }));
   }
-
   function handleToggleSource(useAlt) {
     if (useAlt === editingAlt) return;
     if (lines.length > 0 && !window.confirm(`Switch to ${useAlt ? 'WhisperX' : 'AI-corrected'} source? Unsaved changes will be lost.`)) return;
-    setEditingAlt(useAlt);
-    setLines(getSourceLines(useAlt));
-    setActiveIdx(null);
+    setEditingAlt(useAlt); setLines(getSourceLines(useAlt)); setActiveIdx(null);
+    setActiveChipLine(null); setActiveChipIdx(null);
   }
-
   function updateLine(idx, field, value) { setLines(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l)); }
   function deleteLine(idx, e) { e?.stopPropagation(); setLines(prev => prev.filter((_, i) => i !== idx)); setActiveIdx(prev => prev === null || prev < idx ? prev : prev === idx ? null : prev - 1); }
   function addLine() { const t = lines[lines.length - 1]?.time || 0; setLines(prev => [...prev, { id: uid(), time: t + 3, text: '', color: null, words: [] }]); setActiveIdx(lines.length); }
 
   async function handleSave() {
     setSaving(true);
+    commitChip(activeChipLine, activeChipIdx);
     const sorted = [...lines].sort((a, b) => a.time - b.time);
     if (editingAlt) {
-      // Saving WhisperX backup — mark this as the preferred source
-      await onSave({ ...song, lyricsAlt: sorted, lyricsSource: 'alt' });
+      await onSave({ ...song, lyricsAlt: sorted, lyricsSource: 'alt', tuned });
     } else {
-      // Saving AI-corrected primary — mark as preferred source
-      await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none', lyricsSource: 'primary' });
+      await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none', lyricsSource: 'primary', tuned });
     }
     setSaving(false);
   }
@@ -363,19 +408,24 @@ function EditorScreen({ song, onSave, onBack }) {
           <p style={{ fontSize: 16, fontWeight: 800, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{localTitle || 'Edit song'}</p>
           <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{lines.length} lines · Editing: {sourceLabel}</p>
         </div>
+        {/* Tuned checkbox — song-level, near Save */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', flexShrink: 0, padding: '0 4px' }}>
+          <div style={{ width: 16, height: 16, borderRadius: 3, border: `1.5px solid ${tuned ? 'var(--amber)' : 'var(--border)'}`, background: tuned ? 'rgba(244,168,39,0.12)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s', flexShrink: 0 }}>
+            {tuned && <i className="ti ti-check" style={{ fontSize: 10, color: 'var(--amber)' }} aria-hidden="true" />}
+          </div>
+          <span style={{ fontSize: 12, color: tuned ? 'var(--amber)' : 'var(--muted)', whiteSpace: 'nowrap' }}>Tuned</span>
+          <input type="checkbox" checked={tuned} onChange={e => setTuned(e.target.checked)} style={{ display: 'none' }} />
+        </label>
         <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ flexShrink: 0 }}>{saving ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Saving…</> : 'Save'}</button>
       </div>
 
       <div className="editor-list">
-        {/* Source toggle — only shown when both sources exist */}
         {hasAlt && (
           <div className="source-toggle">
             <button className={`source-tab${!editingAlt ? ' active' : ''}`} onClick={() => handleToggleSource(false)}>AI-corrected</button>
             <button className={`source-tab${editingAlt ? ' active' : ''}`} onClick={() => handleToggleSource(true)}>WhisperX</button>
           </div>
         )}
-
-        {/* Song details — only editable in primary source */}
         {!editingAlt && (
           <div className="card" style={{ marginBottom: 8 }}>
             <span className="card-label">Song details</span>
@@ -384,27 +434,73 @@ function EditorScreen({ song, onSave, onBack }) {
           </div>
         )}
 
-        {/* Lyric lines */}
         {lines.map((line, idx) => {
-          const isActive = activeIdx === idx;
+          const isActive  = activeIdx === idx;
+          const lineHasWords = (line.words?.length ?? 0) > 0;
           if (isActive) return (
             <div key={line.id} className="editor-row-active">
               <div className="editor-row-top">
-                <input className="editor-ts-input" defaultValue={fmt(line.time)} onBlur={e => updateLine(idx, 'time', parseTime(e.target.value))} onClick={e => e.stopPropagation()} aria-label="Timestamp" />
-                <input className="editor-text-input" type="text" value={line.text} onChange={e => updateLine(idx, 'text', e.target.value)} autoFocus placeholder="Lyric text…" onClick={e => e.stopPropagation()} />
+                {/* Timestamp: derived if words exist, else editable */}
+                {lineHasWords
+                  ? <span className="editor-ts-input" style={{ color: 'var(--muted)', cursor: 'default', userSelect: 'none' }}>{fmtWordTime(line.time)}</span>
+                  : <input className="editor-ts-input" defaultValue={fmt(line.time)} onBlur={e => updateLine(idx, 'time', parseTime(e.target.value))} onClick={e => e.stopPropagation()} aria-label="Timestamp" />
+                }
+                {/* Text: derived if words exist, else editable */}
+                {lineHasWords
+                  ? <div className="editor-text-derived" onClick={e => e.stopPropagation()}><i className="ti ti-lock" style={{ fontSize: 12, color: 'var(--muted)', flexShrink: 0 }} aria-hidden="true" /><span style={{ flex: 1, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{line.text}</span></div>
+                  : <input className="editor-text-input" type="text" value={line.text} onChange={e => updateLine(idx, 'text', e.target.value)} autoFocus placeholder="Lyric text…" onClick={e => e.stopPropagation()} />
+                }
                 <button className="btn btn-ghost editor-del-btn" onClick={e => deleteLine(idx, e)} aria-label="Delete line"><i className="ti ti-trash" aria-hidden="true" /></button>
               </div>
+              {/* Color swatches */}
               <div className="editor-swatches">
                 {EDITOR_COLORS.map(c => { const isSel = line.color === c.hex || (line.color === null && c.hex === '#F4A827'); return (<div key={c.hex} className={`editor-swatch${isSel ? ' editor-swatch--sel' : ''}`} style={{ background: c.hex, '--sw': c.hex }} title={c.name} onClick={e => { e.stopPropagation(); updateLine(idx, 'color', line.color === c.hex ? null : c.hex); }} />); })}
                 <span className="editor-color-name">{line.color ? (EDITOR_COLORS.find(c => c.hex === line.color)?.name || '') : 'Amber (default)'}</span>
               </div>
+              {/* Word chips — only if words exist */}
+              {lineHasWords && (
+                <div className="word-chips-section">
+                  <p className="word-chips-hint"><i className="ti ti-info-circle" style={{ fontSize: 11 }} aria-hidden="true" /> Text and start time derive from chips below</p>
+                  <div className="word-chips-row">
+                    {line.words.map((w, wi) => {
+                      const isSel = activeChipLine === idx && activeChipIdx === wi;
+                      return (
+                        <div key={wi} className={`word-chip${isSel ? ' word-chip--sel' : ''}`} onClick={e => { e.stopPropagation(); if (isSel) { commitChip(idx, wi); setActiveChipIdx(null); } else selectChip(idx, wi); }}>
+                          <span className="chip-word">{w.word}</span>
+                          <span className="chip-time">{fmtWordTime(w.start)}</span>
+                        </div>
+                      );
+                    })}
+                    <button className="chip-add-btn" onClick={e => { e.stopPropagation(); addWord(idx); }} aria-label="Add word"><i className="ti ti-plus" style={{ fontSize: 10 }} aria-hidden="true" /> word</button>
+                  </div>
+                  {/* Chip editor — shown when a chip is selected */}
+                  {activeChipLine === idx && activeChipIdx !== null && activeChipIdx < line.words.length && (
+                    <div className="chip-editor" onClick={e => e.stopPropagation()}>
+                      <div className="chip-field-group" style={{ flex: 1, minWidth: 80 }}>
+                        <span className="chip-field-label">Word</span>
+                        <input className="chip-field" value={draftWord} onChange={e => setDraftWord(e.target.value)} onBlur={() => commitChip(idx, activeChipIdx)} placeholder="word" style={{ width: '100%' }} />
+                      </div>
+                      <div className="chip-field-group">
+                        <span className="chip-field-label">Start</span>
+                        <input className="chip-field chip-field--time" value={draftStart} onChange={e => setDraftStart(e.target.value)} onBlur={() => commitChip(idx, activeChipIdx)} placeholder="0:00.0" />
+                      </div>
+                      <div className="chip-field-group">
+                        <span className="chip-field-label">End</span>
+                        <input className="chip-field chip-field--time" value={draftEnd} onChange={e => setDraftEnd(e.target.value)} onBlur={() => commitChip(idx, activeChipIdx)} placeholder="0:00.0" />
+                      </div>
+                      <button className="btn btn-ghost" style={{ padding: '4px 7px', alignSelf: 'flex-end', color: 'var(--rose)' }} onClick={e => { e.stopPropagation(); deleteWord(idx, activeChipIdx); }} aria-label="Delete word"><i className="ti ti-trash" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           );
           return (
-            <div key={line.id} className="editor-row" onClick={() => setActiveIdx(idx)}>
+            <div key={line.id} className="editor-row" onClick={() => { setActiveIdx(idx); setActiveChipLine(null); setActiveChipIdx(null); }}>
               <span className="editor-ts">{fmt(line.time)}</span>
               <div className="editor-dot" style={{ background: line.color || '#F4A827' }} />
               <span className="editor-text" style={{ color: line.color || 'var(--text)' }}>{line.text || <em style={{ color: 'var(--muted)' }}>empty</em>}</span>
+              {lineHasWords && <span className="word-w-badge" title="Has word timing">W</span>}
               <button className="btn btn-ghost editor-del-btn" onClick={e => deleteLine(idx, e)} aria-label="Delete line"><i className="ti ti-trash" aria-hidden="true" /></button>
             </div>
           );
@@ -686,6 +782,8 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   const [guideVolume, setGuideVolume]     = useState(settings?.defaultGuideVolume ?? 0);
   const [guideExpanded, setGuideExpanded] = useState(false);
   const [playError, setPlayError]         = useState(null);
+  const [lyricMode, setLyricMode] = useState(() => { try { return localStorage.getItem('karaklas_lyric_mode') || 'wash'; } catch { return 'wash'; } });
+  function toggleLyricMode(mode) { setLyricMode(mode); try { localStorage.setItem('karaklas_lyric_mode', mode); } catch {} }
 
   const [isCinematic, setIsCinematic] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
   useEffect(() => { const check = () => setIsCinematic(window.innerWidth >= 768); window.addEventListener('resize', check); return () => window.removeEventListener('resize', check); }, []);
@@ -762,7 +860,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   function renderActiveLine(line) {
     if (!line) return '\u00A0';
     const lineColor = line.color || 'var(--amber)';
-    if (line.words?.length > 0) {
+    if (lyricMode === 'wash' && line.words?.length > 0) {
       return (<span>{line.words.map((w, i) => { let color; if (currentTime >= w.end) color = 'rgba(237,233,224,0.18)'; else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); else color = lineColor; return <span key={i} style={{ color, transition: 'color 0.1s' }}>{w.word}{i < line.words.length - 1 ? ' ' : ''}</span>; })}</span>);
     }
     return line.text;
@@ -784,8 +882,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         const singEnd       = lastWordEnd ?? currentLine?.time ?? 0;
         const totalBreak    = nextLine ? nextLine.time - singEnd : 0;
         const pastSinging   = lastWordEnd ? currentTime >= lastWordEnd : (currentTime - (currentLine?.time ?? 0)) >= 2;
-        const inBreak       = activeLine >= 0 && nextLine !== undefined && totalBreak >= 20 && pastSinging && timeToNext !== null && timeToNext > 0;
-        const breakDuration = inBreak ? Math.round(totalBreak) : 0;
+        const inBreak        = activeLine >= 0 && nextLine !== undefined && totalBreak >= 20 && pastSinging && timeToNext !== null && timeToNext > 0;
+        const breakCountdown = inBreak ? Math.max(0, Math.ceil(timeToNext)) : 0;
+        const showIntro      = activeLine < 0 && lyrics.length > 0 && lyrics[0].time > 15 && currentTime < lyrics[0].time;
+        const introCountdown = showIntro ? Math.max(0, Math.ceil(lyrics[0].time - currentTime)) : 0;
         const classMap      = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' };
         return (
           <>
@@ -794,9 +894,16 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
               const isCur     = off === 0;
               const lineColor = line?.color || 'var(--amber)';
               const cls       = (isCur && inBreak) ? 'past' : classMap[String(off)];
-              return (<div key={off} className={`lyric-line ${cls}`} style={(isCur && !inBreak) ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{isCur ? renderActiveLine(line) : (line ? line.text : '\u00A0')}</div>);
+              const content = isCur
+                ? (showIntro ? null : renderActiveLine(line))   // null = handled by intro pill above
+                : (line ? line.text : '\u00A0');
+              if (isCur && showIntro) return <div key={off} className="lyric-line past">{'\u00A0'}</div>;
+              return (<div key={off} className={`lyric-line ${cls}`} style={(isCur && !inBreak && !showIntro) ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{content ?? '\u00A0'}</div>);
             })}
-            {inBreak && <div className="lyric-break-info">Musical break — {breakDuration}s</div>}
+            {showIntro && activeLine < 0 && (
+              <div className="lyric-break-info">Intro — {introCountdown}s</div>
+            )}
+            {inBreak && <div className="lyric-break-info">Musical break — {breakCountdown}s</div>}
             {[1,2].map(off => { const line = lyrics[activeLine + off]; return (<div key={off} className={`lyric-line ${classMap[String(off)]}`}>{line ? line.text : '\u00A0'}</div>); })}
           </>
         );
@@ -817,7 +924,12 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
         <p style={{ flex: 1, fontSize: 14, color: 'rgba(200,205,230,0.65)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.title}{song.artist ? ` — ${song.artist}` : ''}</p>
         {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
-        {hasWords && <span className="badge badge-teal badge-xs" style={{ flexShrink: 0 }}>⚡ Words</span>}
+        {hasWords && (
+          <div className="lyric-mode-toggle" style={{ flexShrink: 0 }}>
+            <button className={`lmt-btn${lyricMode === 'wash' ? ' lmt-active' : ''}`} onClick={() => toggleLyricMode('wash')} title="Words" aria-label="Word wash mode">W</button>
+            <button className={`lmt-btn${lyricMode === 'solid' ? ' lmt-active' : ''}`} onClick={() => toggleLyricMode('solid')} title="Lines" aria-label="Lines colour mode">¶</button>
+          </div>
+        )}
       </div>
       {playError && (<div style={{ margin: '0 28px 8px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>{playError}</div>)}
       {lyricsArea}{nextUpCard}
@@ -842,7 +954,12 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         <div className="song-avatar" style={{ background: c.bg, color: c.fg, width: 44, height: 44, fontSize: 18 }}>{song.title[0]?.toUpperCase()}</div>
         <div className="player-meta"><div className="player-title">{song.title}</div><div className="player-artist">{song.artist || 'Unknown artist'}</div></div>
         {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
-        {hasWords && <span className="badge badge-teal badge-xs">⚡ Words</span>}
+        {hasWords && (
+          <div className="lyric-mode-toggle">
+            <button className={`lmt-btn${lyricMode === 'wash' ? ' lmt-active' : ''}`} onClick={() => toggleLyricMode('wash')} title="Words" aria-label="Word wash mode">W</button>
+            <button className={`lmt-btn${lyricMode === 'solid' ? ' lmt-active' : ''}`} onClick={() => toggleLyricMode('solid')} title="Lines" aria-label="Lines colour mode">¶</button>
+          </div>
+        )}
       </div>
       {playError && (<div style={{ margin: '0 20px 6px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>{playError}</div>)}
       {lyricsArea}{nextUpCard}
@@ -908,7 +1025,7 @@ export default function App() {
 
   function handleSettingsChange(patch) { const u = { ...settings, ...patch }; setSettings(u); persistSettings(u); }
   async function handleAddSong(song)   { const s = { ...song, addedAt: Date.now() }; setSongs(prev => [s, ...prev]); setTab('library'); await saveSongData(s); }
-  async function handleSaveEdited(s)   { setSongs(prev => prev.map(x => x.id === s.id ? s : x)); setEditingSong(null); await saveSongData(s); }
+  async function handleSaveEdited(s)   { setSongs(prev => prev.map(x => x.id === s.id ? { ...x, ...s } : x)); setEditingSong(null); await saveSongData(s); }
   async function handleDeleteSong(song) { setSongs(prev => prev.filter(s => s.id !== song.id)); await archiveDeletedSong(song); }
 
   if (editingSong) return (<div className="app-shell app-shell--wide"><EditorScreen song={editingSong} onSave={handleSaveEdited} onBack={() => setEditingSong(null)} /></div>);
