@@ -120,7 +120,7 @@ function reconstructFromMinimal(minimal, lrcLines) {
     const words = (item.w || []).slice(0, textWords.length).map((pair, i) => ({
       word: textWords[i], start: pair[0], end: pair[1],
     }));
-    return { ...lrc, time: item.t != null ? item.t : lrc.time, words };
+    return { ...lrc, time: item.t != null ? item.t : lrc.time, words, endTime: words[words.length - 1]?.end ?? lrc.endTime };
   }).filter(Boolean);
 }
 
@@ -200,11 +200,11 @@ function whisperToLines(out) {
       if (words.length > 0) {
         // Split long segments at natural pauses so each line stays readable
         for (const chunk of splitSegmentWords(words)) {
-          lines.push({ id: uid(), time: chunk[0].start, text: chunk.map(w => w.word).join(' '), color: null, words: chunk });
+          lines.push({ id: uid(), time: chunk[0].start, endTime: chunk[chunk.length - 1].end, text: chunk.map(w => w.word).join(' '), color: null, words: chunk });
         }
       } else if (seg.text.trim()) {
         // No word-level data — keep as single line, can't split without timing
-        lines.push({ id: uid(), time: seg.start, text: seg.text.trim(), color: null, words: [] });
+        lines.push({ id: uid(), time: seg.start, endTime: seg.end, text: seg.text.trim(), color: null, words: [] });
       }
     }
     return lines;
@@ -238,7 +238,7 @@ function mergeWordsIntoLines(lrcLines, whisperOut) {
     const lineStart = line.time;
     const lineEnd   = lrcLines[i + 1]?.time ?? Infinity;
     const words     = allWords.filter(w => w.start >= lineStart - 0.4 && w.start < lineEnd);
-    return { ...line, words };
+    return { ...line, words, endTime: words[words.length - 1]?.end ?? line.endTime };
   });
 }
 
@@ -348,7 +348,7 @@ function EditorScreen({ song, onSave, onBack }) {
         start: parseWordTime(draftStart),
         end:   parseWordTime(draftEnd),
       });
-      return { ...line, words: newWords, text: newWords.map(w => w.word).join(' '), time: newWords[0]?.start ?? line.time };
+      return { ...line, words: newWords, text: newWords.map(w => w.word).join(' '), time: newWords[0]?.start ?? line.time, endTime: newWords[newWords.length - 1]?.end ?? line.endTime };
     }));
   }
   function addWord(li) {
@@ -360,7 +360,7 @@ function EditorScreen({ song, onSave, onBack }) {
     const newWords = [...line.words, newWord];
     const newIdx   = newWords.length - 1;
     setLines(prev => prev.map((l, i) =>
-      i !== li ? l : { ...l, words: newWords, text: newWords.map(w => w.word).join(' ') }
+      i !== li ? l : { ...l, words: newWords, text: newWords.map(w => w.word).join(' '), endTime: newWords[newWords.length - 1]?.end ?? l.endTime }
     ));
     // Set draft state directly from computed values — no state read needed
     setActiveChipLine(li);
@@ -373,9 +373,31 @@ function EditorScreen({ song, onSave, onBack }) {
     setLines(prev => prev.map((l, i) => {
       if (i !== li) return l;
       const newWords = l.words.filter((_, j) => j !== wi);
-      return { ...l, words: newWords, text: newWords.map(w => w.word).join(' '), time: newWords[0]?.start ?? l.time };
+      return { ...l, words: newWords, text: newWords.map(w => w.word).join(' '), time: newWords[0]?.start ?? l.time, endTime: newWords[newWords.length - 1]?.end ?? l.endTime };
     }));
     setActiveChipIdx(null);
+  }
+
+  function convertToWords(lineIdx) {
+    const line = lines[lineIdx];
+    if (!line.text.trim()) return;
+    const STEP = 0.5;   // 0.4s word + 0.1s gap
+    const WORD_DUR = 0.4;
+    const wordList = line.text.split(/\s+/).filter(Boolean);
+    const newWords = wordList.map((word, i) => ({
+      word,
+      start: parseFloat((line.time + i * STEP).toFixed(3)),
+      end:   parseFloat((line.time + i * STEP + WORD_DUR).toFixed(3)),
+    }));
+    setLines(prev => prev.map((l, i) => i !== lineIdx ? l : {
+      ...l, words: newWords, endTime: newWords[newWords.length - 1]?.end,
+    }));
+    // Pre-select first chip
+    setActiveChipLine(lineIdx);
+    setActiveChipIdx(0);
+    setDraftWord(newWords[0].word);
+    setDraftStart(fmtWordTime(newWords[0].start));
+    setDraftEnd(fmtWordTime(newWords[0].end));
   }
 
   function getSourceLines(useAlt) {
@@ -462,7 +484,20 @@ function EditorScreen({ song, onSave, onBack }) {
               <div className="editor-swatches">
                 {EDITOR_COLORS.map(c => { const isSel = line.color === c.hex || (line.color === null && c.hex === '#F4A827'); return (<div key={c.hex} className={`editor-swatch${isSel ? ' editor-swatch--sel' : ''}`} style={{ background: c.hex, '--sw': c.hex }} title={c.name} onClick={e => { e.stopPropagation(); updateLine(idx, 'color', line.color === c.hex ? null : c.hex); }} />); })}
                 <span className="editor-color-name">{line.color ? (EDITOR_COLORS.find(c => c.hex === line.color)?.name || '') : 'Amber (default)'}</span>
+                <div style={{ marginLeft: 'auto', flexShrink: 0 }}>
+                  {lineHasWords
+                    ? <span className="word-w-badge" title="Has word timing">W</span>
+                    : <button className="convert-to-words-btn" onClick={e => { e.stopPropagation(); convertToWords(idx); }} title="Convert to word chips">+W</button>
+                  }
+                </div>
               </div>
+              {/* Optional end time for plain lines */}
+              {!lineHasWords && (
+                <div className="editor-endtime-row">
+                  <span className="editor-endtime-label">End time (optional)</span>
+                  <input className="editor-ts-input" defaultValue={line.endTime != null ? fmt(line.endTime) : ''} placeholder="—" onBlur={e => { const v = parseTime(e.target.value); updateLine(idx, 'endTime', v > 0 ? v : null); }} onClick={e => e.stopPropagation()} aria-label="End time (optional)" style={{ opacity: 0.75 }} />
+                </div>
+              )}
               {/* Word chips — only if words exist */}
               {lineHasWords && (
                 <div className="word-chips-section">
@@ -506,13 +541,15 @@ function EditorScreen({ song, onSave, onBack }) {
               <span className="editor-ts">{fmt(line.time)}</span>
               <div className="editor-dot" style={{ background: line.color || '#F4A827' }} />
               <span className="editor-text" style={{ color: line.color || 'var(--text)' }}>{line.text || <em style={{ color: 'var(--muted)' }}>empty</em>}</span>
-              {lineHasWords && <span className="word-w-badge" title="Has word timing">W</span>}
               <button className="btn btn-ghost editor-del-btn" onClick={e => deleteLine(idx, e)} aria-label="Delete line"><i className="ti ti-trash" aria-hidden="true" /></button>
             </div>
           );
         })}
 
-        <button className="btn btn-secondary" onClick={addLine} style={{ marginTop: 10, alignSelf: 'flex-start' }}><i className="ti ti-plus" aria-hidden="true" /> Add line</button>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary" onClick={addLine}><i className="ti ti-plus" aria-hidden="true" /> Add line</button>
+          <button className="btn btn-secondary" onClick={() => setLines(prev => [...prev].sort((a, b) => a.time - b.time))}><i className="ti ti-arrows-sort" aria-hidden="true" /> Sort by time</button>
+        </div>
       </div>
     </div>
   );
@@ -885,7 +922,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
         const nextLine      = lyrics[activeLine + 1];
         const timeToNext    = nextLine ? nextLine.time - currentTime : null;
         const lastWordEnd   = currentLine?.words?.length > 0 ? currentLine.words[currentLine.words.length - 1].end : null;
-        const singEnd       = lastWordEnd ?? currentLine?.time ?? 0;
+        const singEnd       = lastWordEnd ?? currentLine?.endTime ?? currentLine?.time ?? 0;
         const totalBreak    = nextLine ? nextLine.time - singEnd : 0;
         const pastSinging   = lastWordEnd ? currentTime >= lastWordEnd : (currentTime - (currentLine?.time ?? 0)) >= 2;
         const inBreak        = activeLine >= 0 && nextLine !== undefined && totalBreak >= 20 && pastSinging && timeToNext !== null && timeToNext > 0;
