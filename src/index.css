@@ -866,7 +866,7 @@ textarea { resize: vertical; line-height: 1.7; }
 }
 .word-chips-section {
   border-top: 1px solid var(--border);
-  padding: 10px 0 0 3px;
+  padding: 10px 0 0 12px;
   margin-top: 8px;
   display: flex;
   flex-direction: column;
@@ -874,11 +874,10 @@ textarea { resize: vertical; line-height: 1.7; }
 }
 .word-chips-hint {
   font-size: 10px;
-  color: var(--muted);
+  color: var(--text);
   display: flex;
   align-items: center;
   gap: 4px;
-  opacity: 0.7;
   margin: 0;
 }
 .word-chips-row {
@@ -969,3 +968,63 @@ textarea { resize: vertical; line-height: 1.7; }
 }
 /* Purple badge for library */
 .badge-purple { background: #1e1540; color: #A55EEA; }
+
+/* ── Convert to words button (+W) ───────────────────────────────────────── */
+.convert-to-words-btn {
+  background: transparent;
+  border: 1px dashed #2BCBBA;
+  border-radius: 4px;
+  padding: 3px 8px;
+  color: #2BCBBA;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+.convert-to-words-btn:hover { background: rgba(43,203,186,0.12); }
+
+/* ── Optional end time row in editor ────────────────────────────────────── */
+.editor-endtime-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.editor-endtime-label {
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Amber W badge for +W convert button ───────────────────────────────── */
+.word-w-badge-amber {
+  width: 17px;
+  height: 17px;
+  border-radius: 3px;
+  background: rgba(244,168,39,0.10);
+  color: #F4A827;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  border: 1px solid rgba(244,168,39,0.35);
+  transition: background 0.12s;
+}
+.word-w-badge-amber:hover { background: rgba(244,168,39,0.22); }
+
+/* ── End time input (right side of editor row) ──────────────────────────── */
+.editor-ts-input--end {
+  opacity: 0.72;
+  text-align: right;
+}

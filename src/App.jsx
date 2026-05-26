@@ -478,6 +478,10 @@ function EditorScreen({ song, onSave, onBack }) {
                   ? <div className="editor-text-derived" onClick={e => e.stopPropagation()}><i className="ti ti-lock" style={{ fontSize: 12, color: 'var(--muted)', flexShrink: 0 }} aria-hidden="true" /><span style={{ flex: 1, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{line.text}</span></div>
                   : <input className="editor-text-input" type="text" value={line.text} onChange={e => updateLine(idx, 'text', e.target.value)} autoFocus placeholder="Lyric text…" onClick={e => e.stopPropagation()} />
                 }
+                {/* End time: only for non-word lines, right-aligned balancing the start time */}
+                {!lineHasWords && (
+                  <input className="editor-ts-input editor-ts-input--end" defaultValue={line.endTime != null ? fmt(line.endTime) : ''} placeholder="-:--.-" onBlur={e => { const v = parseTime(e.target.value); updateLine(idx, 'endTime', v > 0 ? v : null); }} onClick={e => e.stopPropagation()} aria-label="End time (optional)" />
+                )}
                 <button className="btn btn-ghost editor-del-btn" onClick={e => deleteLine(idx, e)} aria-label="Delete line"><i className="ti ti-trash" aria-hidden="true" /></button>
               </div>
               {/* Color swatches */}
@@ -487,17 +491,11 @@ function EditorScreen({ song, onSave, onBack }) {
                 <div style={{ marginLeft: 'auto', flexShrink: 0 }}>
                   {lineHasWords
                     ? <span className="word-w-badge" title="Has word timing">W</span>
-                    : <button className="convert-to-words-btn" onClick={e => { e.stopPropagation(); convertToWords(idx); }} title="Convert to word chips">+W</button>
+                    : <button className="word-w-badge-amber" onClick={e => { e.stopPropagation(); convertToWords(idx); }} title="Convert to word chips">W</button>
                   }
                 </div>
               </div>
-              {/* Optional end time for plain lines */}
-              {!lineHasWords && (
-                <div className="editor-endtime-row">
-                  <span className="editor-endtime-label">End time (optional)</span>
-                  <input className="editor-ts-input" defaultValue={line.endTime != null ? fmt(line.endTime) : ''} placeholder="—" onBlur={e => { const v = parseTime(e.target.value); updateLine(idx, 'endTime', v > 0 ? v : null); }} onClick={e => e.stopPropagation()} aria-label="End time (optional)" style={{ opacity: 0.75 }} />
-                </div>
-              )}
+
               {/* Word chips — only if words exist */}
               {lineHasWords && (
                 <div className="word-chips-section">
@@ -541,6 +539,7 @@ function EditorScreen({ song, onSave, onBack }) {
               <span className="editor-ts">{fmt(line.time)}</span>
               <div className="editor-dot" style={{ background: line.color || '#F4A827' }} />
               <span className="editor-text" style={{ color: line.color || 'var(--text)' }}>{line.text || <em style={{ color: 'var(--muted)' }}>empty</em>}</span>
+              {lineHasWords && <span className="word-w-badge" title="Has word timing">W</span>}
               <button className="btn btn-ghost editor-del-btn" onClick={e => deleteLine(idx, e)} aria-label="Delete line"><i className="ti ti-trash" aria-hidden="true" /></button>
             </div>
           );
