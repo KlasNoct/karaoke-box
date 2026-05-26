@@ -554,6 +554,27 @@ function AddSongScreen({ onSave }) {
       setErrorMsg(e.message); setStage('error');
     }
   }
+
+  function handleSave() {
+    const r = result || {};
+    const textLines = lyricsText.trim()
+      ? parseLRC(lyricsText).length > 0 ? parseLRC(lyricsText)
+        : lyricsText.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3.5, text: t, color: null, words: [] }))
+      : [];
+    const finalLyrics = r.lyrics?.length > 0 ? r.lyrics : textLines;
+    onSave({
+      id: uid(), title: title.trim(), artist: artist.trim(),
+      audioUrl: r.instrumentalUrl || (instrFile ? URL.createObjectURL(instrFile) : null),
+      vocalsUrl: r.vocalsUrl || null,
+      hasAudio: !!(r.instrumentalUrl || instrFile),
+      lyrics: finalLyrics,
+      lyricsAlt: r.lyricsAlt?.length > 0 ? r.lyricsAlt : [],
+      lyricsType: r.lyrics?.length > 0 ? r.lyricsType : finalLyrics.length > 0 ? 'plain' : 'none',
+      lyricsSource: 'primary',
+      plainLyrics: lyricsText,
+    });
+  }
+
   if (stage === 'uploading') return (
     <div className="screen" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, textAlign: 'center', padding: '0 32px' }}>
       <i className="ti ti-cloud-upload spin" style={{ fontSize: 40, color: 'var(--muted)' }} aria-hidden="true" />
