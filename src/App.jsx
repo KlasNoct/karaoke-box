@@ -352,16 +352,22 @@ function EditorScreen({ song, onSave, onBack }) {
     }));
   }
   function addWord(li) {
-    setLines(prev => {
-      const line = prev[li];
-      const last = line.words[line.words.length - 1];
-      const s = last ? last.end + 0.1 : line.time;
-      const newWord = { word: 'word', start: s, end: s + 0.5 };
-      const newWords = [...line.words, newWord];
-      const newIdx = newWords.length - 1;
-      setTimeout(() => selectChip(li, newIdx), 0);
-      return prev.map((l, i) => i !== li ? l : { ...l, words: newWords, text: newWords.map(w => w.word).join(' ') });
-    });
+    // Compute new word from current lines state directly — avoids closure issues
+    const line     = lines[li];
+    const last     = line.words[line.words.length - 1];
+    const s        = last ? last.end + 0.1 : line.time;
+    const newWord  = { word: 'word', start: s, end: s + 0.5 };
+    const newWords = [...line.words, newWord];
+    const newIdx   = newWords.length - 1;
+    setLines(prev => prev.map((l, i) =>
+      i !== li ? l : { ...l, words: newWords, text: newWords.map(w => w.word).join(' ') }
+    ));
+    // Set draft state directly from computed values — no state read needed
+    setActiveChipLine(li);
+    setActiveChipIdx(newIdx);
+    setDraftWord(newWord.word);
+    setDraftStart(fmtWordTime(newWord.start));
+    setDraftEnd(fmtWordTime(newWord.end));
   }
   function deleteWord(li, wi) {
     setLines(prev => prev.map((l, i) => {
