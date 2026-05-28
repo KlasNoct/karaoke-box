@@ -498,15 +498,24 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
                 {hasWords && <span className="badge badge-teal badge-xs" title="Has word-level timing" style={{ padding: '1px 5px', fontSize: 10 }}>W</span>}
                 {song.tuned && <span className="badge badge-purple badge-xs" title="Tuned" style={{ padding: '1px 5px', fontSize: 10 }}>✓</span>}
               </div>
-              {/* + button — primary action: add to end of queue */}
+              {/* Add to queue — primary amber chip */}
               <button
-                className="btn btn-ghost"
-                style={{ padding: 7, minWidth: 40, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--amber)', flexShrink: 0 }}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: '5px 9px', marginLeft: 4, flexShrink: 0,
+                  background: 'rgba(244,168,39,0.13)',
+                  border: '1px solid rgba(244,168,39,0.3)',
+                  borderRadius: 8, cursor: 'pointer',
+                  color: 'var(--amber)', minHeight: 36,
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(244,168,39,0.22)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(244,168,39,0.13)'; }}
                 onClick={e => { e.stopPropagation(); onAddToQueueEnd(song); }}
                 aria-label="Add to end of queue"
                 title="Add to end of queue"
               >
-                <i className="ti ti-playlist-add" style={{ fontSize: 22 }} aria-hidden="true" />
+                <i className="ti ti-playlist-add" style={{ fontSize: 21 }} aria-hidden="true" />
               </button>
               <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
             </div>
@@ -911,15 +920,26 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
 
   useEffect(() => {
     const a = audioRef.current; if (!a) return;
-    const onMeta = () => {
-      setDuration(a.duration);
-      // Nudge currentTime to force browser to recalibrate VBR duration/seeking
-      a.currentTime = 0.001;
-      a.currentTime = 0;
-    };
+    let resynced = false;
+    const onMeta = () => { setDuration(a.duration); };
     const onEnd  = () => { setPlaying(false); setActiveLine(-1); onSongEnd?.(); };
-    a.addEventListener('loadedmetadata', onMeta); a.addEventListener('ended', onEnd);
-    return () => { a.removeEventListener('loadedmetadata', onMeta); a.removeEventListener('ended', onEnd); };
+    // canplaythrough fires once enough data is buffered — ideal time to force VBR resync
+    // by seeking to the end (forces browser to read the full seek table) then back to 0
+    const onCanPlay = () => {
+      if (resynced || !isFinite(a.duration) || a.duration <= 0) return;
+      resynced = true;
+      const dur = a.duration;
+      a.currentTime = dur - 0.01; // seek near end → browser reads full VBR TOC
+      requestAnimationFrame(() => { a.currentTime = 0; }); // snap back to start
+    };
+    a.addEventListener('loadedmetadata', onMeta);
+    a.addEventListener('canplaythrough', onCanPlay);
+    a.addEventListener('ended', onEnd);
+    return () => {
+      a.removeEventListener('loadedmetadata', onMeta);
+      a.removeEventListener('canplaythrough', onCanPlay);
+      a.removeEventListener('ended', onEnd);
+    };
   }, [song.id]);
 
   useEffect(() => {
@@ -998,7 +1018,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     return line.text;
   }
 
-  const audioEls = (<>{song.audioUrl && <audio ref={audioRef} src={song.audioUrl} preload="metadata" />}{song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="metadata" />}</>);
+  const audioEls = (<>{song.audioUrl && <audio ref={audioRef} src={song.audioUrl} preload="auto" />}{song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="metadata" />}</>);
 
   const randomBand = randomMode && (<div className="random-band"><div className="random-band-label"><i className="ti ti-arrows-shuffle" style={{ fontSize: 14 }} aria-hidden="true" /> Random mode</div><button className="random-stop-btn" onClick={onStopRandom} aria-label="Stop random mode"><i className="ti ti-x" style={{ fontSize: 11 }} aria-hidden="true" /> Stop</button></div>);
 
@@ -1370,15 +1390,23 @@ function useLongPress(onPress, onLongPress, delay = 500) {
     if (e.button !== undefined && e.button !== 0) return;
     e.preventDefault();
     fired.current = false;
-    timer.current = setTimeout(() => { fired.current = true; onLongPress(); }, delay);
+    timer.current = setTimeout(() => {
+      fired.current = true;
+      onLongPress();
+      // Suppress the synthetic click the browser fires after touchEnd —
+      // intercept in capture phase so it never reaches any element
+      const suppress = (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        document.removeEventListener('click', suppress, true);
+      };
+      document.addEventListener('click', suppress, true);
+      setTimeout(() => document.removeEventListener('click', suppress, true), 600);
+    }, delay);
   };
   const end = (e) => {
     clearTimeout(timer.current);
-    if (fired.current) {
-      // Long-press already fired — suppress the synthetic click the browser emits on touchEnd
-      e?.preventDefault();
-      return;
-    }
+    if (fired.current) { fired.current = false; return; }
     onPress();
   };
   const cancel = () => { clearTimeout(timer.current); fired.current = false; };
@@ -1393,19 +1421,21 @@ function QueueArrow({ direction, disabled, onPress, onLongPress }) {
       disabled={disabled}
       aria-label={direction === 'up' ? 'Move up (hold for top)' : 'Move down (hold for bottom)'}
       style={{
-        width: 36, height: 44,
+        width: 36, height: 36,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'none', border: 'none', borderRadius: 6,
+        background: 'none',
+        border: '1px solid rgba(255,255,255,0.14)',
+        borderRadius: 8,
         cursor: disabled ? 'default' : 'pointer',
-        opacity: disabled ? 0.2 : 0.55,
+        opacity: disabled ? 0.2 : 0.7,
         color: 'inherit', flexShrink: 0,
         userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation',
-        transition: 'opacity 0.12s',
+        transition: 'opacity 0.12s, background 0.12s',
       }}
-      onMouseEnter={e => { if (!disabled) e.currentTarget.style.opacity = '1'; }}
-      onMouseLeave={e => { if (!disabled) e.currentTarget.style.opacity = '0.55'; }}
+      onMouseEnter={e => { if (!disabled) { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(255,255,255,0.07)'; } }}
+      onMouseLeave={e => { if (!disabled) { e.currentTarget.style.opacity = '0.7'; e.currentTarget.style.background = 'none'; } }}
     >
-      <i className={`ti ${direction === 'up' ? 'ti-chevron-up' : 'ti-chevron-down'}`} style={{ fontSize: 16 }} aria-hidden="true" />
+      <i className={`ti ${direction === 'up' ? 'ti-chevron-up' : 'ti-chevron-down'}`} style={{ fontSize: 15 }} aria-hidden="true" />
     </button>
   );
 }
@@ -1454,24 +1484,26 @@ function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDow
                   <div style={{ fontSize: 15, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.title}</div>
                   <div style={{ fontSize: 13, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.artist || 'Unknown artist'}</div>
                 </div>
-                {/* Controls — Option B: separate 36px buttons, tabler icons, no gap */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0 }}>
+                {/* Controls — chips with borders, 4px gap */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
                   <QueueArrow direction="up"   disabled={i === 0}                  onPress={() => onMoveUp(i)}   onLongPress={() => onMoveToTop(i)} />
                   <QueueArrow direction="down" disabled={i === queue.length - 1}   onPress={() => onMoveDown(i)} onLongPress={() => onMoveToBottom(i)} />
                   <button
                     onClick={() => onRemove(i)}
                     aria-label="Remove from queue"
                     style={{
-                      width: 36, height: 44,
+                      width: 36, height: 36,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      background: 'none', border: 'none', borderRadius: 6,
-                      cursor: 'pointer', opacity: 0.45, color: 'inherit', flexShrink: 0,
-                      transition: 'opacity 0.12s',
+                      background: 'none',
+                      border: '1px solid rgba(255,255,255,0.14)',
+                      borderRadius: 8,
+                      cursor: 'pointer', opacity: 0.55, color: 'inherit', flexShrink: 0,
+                      transition: 'opacity 0.12s, background 0.12s',
                     }}
-                    onMouseEnter={e => { e.currentTarget.style.opacity = '1'; }}
-                    onMouseLeave={e => { e.currentTarget.style.opacity = '0.45'; }}
+                    onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(255,255,255,0.07)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.opacity = '0.55'; e.currentTarget.style.background = 'none'; }}
                   >
-                    <i className="ti ti-x" style={{ fontSize: 15 }} aria-hidden="true" />
+                    <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" />
                   </button>
                 </div>
               </div>
