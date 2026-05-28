@@ -127,6 +127,27 @@ async function loadLibrary() {
   } catch { return []; }
 }
 
+// Restores selected archived songs back to the library.
+// Cleans deletion flags, re-uploads JSON to library path, removes archive entry.
+async function restoreDeletedSongs(songs) {
+  if (!supabase || !songs.length) return [];
+  const restored = [];
+  for (const song of songs) {
+    const archivePath = song._deletedPath || `deleted/${song.id}.json`;
+    const slug = makeSongSlug(song.title, song.artist);
+    const libraryPath = song._libraryPath || `library/${slug}_${song.id}.json`;
+    try {
+      const { _deleted, _deletedAt, _deletedPath, ...clean } = song;
+      const restoredSong = { ...clean, _libraryPath: libraryPath };
+      const blob = new Blob([JSON.stringify(restoredSong)], { type: 'application/json' });
+      await supabase.storage.from('songs').upload(libraryPath, blob, { upsert: true, contentType: 'application/json' });
+      await supabase.storage.from('songs').remove([archivePath]);
+      restored.push(restoredSong);
+    } catch (e) { console.warn('Could not restore:', song.title, e.message); }
+  }
+  return restored;
+}
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 const SETTINGS_KEY = 'karaoke_settings';
 const loadSettings   = () => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } };
@@ -1112,65 +1133,121 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
 
 
 // ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
-function SettingsScreen({ settings, onSettingsChange }) {
+function SettingsScreen({ settings, onSettingsChange, onRestoreSongs }) {
   const hasSupabase = !!(SUPA_URL && SUPA_KEY);
-  const [deletedSongs, setDeletedSongs]   = useState(null); // null = not loaded
+  const [deletedSongs, setDeletedSongs]     = useState(null);
   const [loadingDeleted, setLoadingDeleted] = useState(false);
-  const [purging, setPurging]             = useState(false);
-  const [purgeResult, setPurgeResult]     = useState(null);
+  const [selected, setSelected]             = useState([]);
+  const [working, setWorking]               = useState(false); // purge or restore in progress
+  const [statusMsg, setStatusMsg]           = useState('');
+
+  const allSelected = deletedSongs?.length > 0 && selected.length === deletedSongs.length;
+  const anySelected = selected.length > 0;
+
+  function toggleSelect(id) {
+    setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
+  function toggleAll() {
+    setSelected(allSelected ? [] : (deletedSongs || []).map(s => s.id));
+  }
 
   async function handleLoadDeleted() {
-    setLoadingDeleted(true);
+    setLoadingDeleted(true); setStatusMsg('');
     const songs = await loadDeletedSongs();
-    setDeletedSongs(songs);
-    setLoadingDeleted(false);
+    setDeletedSongs(songs); setSelected([]); setLoadingDeleted(false);
+  }
+
+  async function handleRestore() {
+    const toRestore = (deletedSongs || []).filter(s => selected.includes(s.id));
+    if (!toRestore.length) return;
+    setWorking(true); setStatusMsg('');
+    const restored = await restoreDeletedSongs(toRestore);
+    if (restored.length) {
+      onRestoreSongs?.(restored);
+      setDeletedSongs(prev => prev.filter(s => !selected.includes(s.id)));
+      setSelected([]);
+      setStatusMsg(`✓ Restored ${restored.length} song${restored.length !== 1 ? 's' : ''}`);
+    }
+    setWorking(false);
   }
 
   async function handlePurge() {
-    if (!window.confirm(`Permanently delete audio files for all ${deletedSongs.length} archived songs? This cannot be undone.`)) return;
-    setPurging(true);
-    const count = await purgeDeletedSongs();
-    setDeletedSongs([]);
-    setPurgeResult(count);
-    setPurging(false);
+    const toPurge = (deletedSongs || []).filter(s => selected.includes(s.id));
+    if (!toPurge.length) return;
+    if (!window.confirm(`Permanently delete audio files for ${toPurge.length} archived song${toPurge.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+    setWorking(true); setStatusMsg('');
+    // Remove audio files + archive entries for selected songs only
+    const toRemove = [];
+    for (const song of toPurge) {
+      const ap = song.audioUrl?.match(/\/storage\/v1\/object\/public\/songs\/(.+)$/)?.[1];
+      const vp = song.vocalsUrl?.match(/\/storage\/v1\/object\/public\/songs\/(.+)$/)?.[1];
+      if (ap) toRemove.push(decodeURIComponent(ap));
+      if (vp) toRemove.push(decodeURIComponent(vp));
+      toRemove.push(song._deletedPath || `deleted/${song.id}.json`);
+    }
+    if (toRemove.length) await supabase.storage.from('songs').remove(toRemove);
+    setDeletedSongs(prev => prev.filter(s => !selected.includes(s.id)));
+    setSelected([]);
+    setStatusMsg(`✓ Purged ${toPurge.length} song${toPurge.length !== 1 ? 's' : ''}`);
+    setWorking(false);
   }
 
   return (
     <div className="screen">
       <div className="page-header"><div><div className="page-title">Settings</div><div className="page-sub">App configuration</div></div></div>
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div className={hasSupabase ? 'success-box' : 'warn-box'}><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className={`ti ${hasSupabase ? 'ti-check' : 'ti-alert-triangle'}`} aria-hidden="true" /> Supabase — {hasSupabase ? 'connected' : 'not configured'}</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{hasSupabase ? 'Songs and audio saved to cloud. Deleted songs archived.' : 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.'}</p></div>
+        <div className={hasSupabase ? 'success-box' : 'warn-box'}><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className={`ti ${hasSupabase ? 'ti-check' : 'ti-alert-triangle'}`} aria-hidden="true" /> Supabase — {hasSupabase ? 'connected' : 'not configured'}</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{hasSupabase ? 'Songs and audio saved to cloud.' : 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.'}</p></div>
 
-        {/* Storage management */}
         {hasSupabase && (
           <div className="card">
             <span className="card-label">Storage — archived songs</span>
             <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px', lineHeight: 1.6 }}>
-              Deleted songs are archived (not immediately removed). Audio files stay in storage until you purge them here.
+              Deleted songs are archived here. Audio files remain in storage until purged.
             </p>
             {deletedSongs === null ? (
               <button className="btn btn-secondary" onClick={handleLoadDeleted} disabled={loadingDeleted}>
                 {loadingDeleted ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Loading…</> : <><i className="ti ti-archive" aria-hidden="true" /> View archived songs</>}
               </button>
             ) : deletedSongs.length === 0 ? (
-              <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>{purgeResult != null ? `✓ Purged ${purgeResult} song${purgeResult !== 1 ? 's' : ''}` : 'No archived songs.'}</p>
+              <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>{statusMsg || 'No archived songs.'}</p>
             ) : (
               <>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12, maxHeight: 220, overflowY: 'auto' }}>
+                {/* Select all row */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0 8px', cursor: 'pointer', borderBottom: '1px solid var(--border)', marginBottom: 4 }}>
+                  <input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ width: 15, height: 15, accentColor: 'var(--amber)', flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>Select all ({deletedSongs.length})</span>
+                </label>
+
+                {/* Song list */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 12, maxHeight: 240, overflowY: 'auto' }}>
                   {deletedSongs.map(s => (
-                    <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-                      <i className="ti ti-music" style={{ fontSize: 14, color: 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
+                    <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 2px', cursor: 'pointer', borderRadius: 4, background: selected.includes(s.id) ? 'rgba(244,168,39,0.05)' : 'transparent' }}>
+                      <input type="checkbox" checked={selected.includes(s.id)} onChange={() => toggleSelect(s.id)} style={{ width: 15, height: 15, accentColor: 'var(--amber)', flexShrink: 0 }} />
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <p style={{ fontSize: 13, fontWeight: 700, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</p>
-                        <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{s.artist || 'Unknown artist'}{s._deletedAt ? ` · deleted ${new Date(s._deletedAt).toLocaleDateString()}` : ''}</p>
+                        <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{s.artist || 'Unknown'}{s._deletedAt ? ` · ${new Date(s._deletedAt).toLocaleDateString()}` : ''}</p>
                       </div>
-                      <span style={{ fontSize: 10, color: s.audioUrl ? 'var(--muted)' : 'var(--rose)', flexShrink: 0 }}>{s.audioUrl ? '● audio' : '○ no audio'}</span>
-                    </div>
+                      <span style={{ fontSize: 10, color: s.audioUrl ? 'var(--muted)' : 'var(--rose)', flexShrink: 0 }}>{s.audioUrl ? '♪' : '○'}</span>
+                    </label>
                   ))}
                 </div>
-                <button className="btn btn-secondary" onClick={handlePurge} disabled={purging} style={{ color: 'var(--rose)', borderColor: 'var(--rose)' }}>
-                  {purging ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Purging…</> : <><i className="ti ti-trash" aria-hidden="true" /> Purge {deletedSongs.length} archived song{deletedSongs.length !== 1 ? 's' : ''}</>}
-                </button>
+
+                {/* Status message */}
+                {statusMsg && <p style={{ fontSize: 12, color: 'var(--muted)', margin: '0 0 8px' }}>{statusMsg}</p>}
+
+                {/* Action buttons */}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-secondary" onClick={handleRestore} disabled={!anySelected || working}
+                    style={{ flex: 1, fontSize: 12 }}>
+                    {working ? <i className="ti ti-loader spin" style={{ fontSize: 12 }} aria-hidden="true" /> : <i className="ti ti-restore" aria-hidden="true" />}
+                    {' '}Restore{anySelected ? ` (${selected.length})` : ''}
+                  </button>
+                  <button className="btn btn-secondary" onClick={handlePurge} disabled={!anySelected || working}
+                    style={{ flex: 1, fontSize: 12, color: anySelected ? 'var(--rose)' : undefined, borderColor: anySelected ? 'var(--rose)' : undefined }}>
+                    <i className="ti ti-trash" aria-hidden="true" />
+                    {' '}Purge{anySelected ? ` (${selected.length})` : ''}
+                  </button>
+                </div>
               </>
             )}
           </div>
@@ -1214,6 +1291,13 @@ export default function App() {
 
   function handleSettingsChange(patch) { const u = { ...settings, ...patch }; setSettings(u); persistSettings(u); }
   async function handleAddSong(song)   { const s = { ...song, addedAt: Date.now() }; setSongs(prev => [s, ...prev]); setTab('library'); const stored = await saveSongData(s); if (stored) setSongs(prev => prev.map(x => x.id === s.id ? stored : x)); }
+  function handleRestoreSongs(restored) {
+    setSongs(prev => {
+      const ids = new Set(restored.map(s => s.id));
+      const withoutDups = prev.filter(s => !ids.has(s.id));
+      return [...restored, ...withoutDups].sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+    });
+  }
   async function handleSaveEdited(s)   { setSongs(prev => prev.map(x => x.id === s.id ? { ...x, ...s } : x)); setEditingSong(null); await saveSongData(s); }
   async function handleDeleteSong(song) { setSongs(prev => prev.filter(s => s.id !== song.id)); await archiveDeletedSong(song); }
 
@@ -1233,7 +1317,7 @@ export default function App() {
       {!loading && (<>
         {tab === 'library'  && <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} onStartRandom={startRandomMode} />}
         {tab === 'add'      && <AddSongScreen songs={songs} onSave={handleAddSong} />}
-        {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} />}
+        {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} onRestoreSongs={handleRestoreSongs} />}
         <nav className="bottom-nav">
           <button className={`nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /> Library</button>
           <button className="fab" onClick={() => setTab('add')} aria-label="Add song"><i className="ti ti-plus" aria-hidden="true" /></button>
