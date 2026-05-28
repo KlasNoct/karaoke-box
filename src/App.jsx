@@ -6,21 +6,35 @@ const SUPA_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = SUPA_URL && SUPA_KEY ? createClient(SUPA_URL, SUPA_KEY) : null;
 
-async function uploadAudioToSupabase(file) {
+// Produces a readable, URL-safe slug from title + artist for file naming.
+// Strips accents, replaces non-alphanumeric with hyphens, truncates to 25 chars each.
+function makeSongSlug(title, artist) {
+  const clean = str => (str || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    .slice(0, 25);
+  const parts = [clean(artist), clean(title)].filter(Boolean);
+  return parts.join('_') || 'unknown';
+}
+
+async function uploadAudioToSupabase(file, title, artist) {
   if (!supabase) throw new Error('Supabase not configured.');
   const ext = file.name.split('.').pop() || 'mp3';
-  const path = `originals/${Date.now()}.${ext}`;
+  const slug = makeSongSlug(title, artist);
+  const path = `originals/${slug}_${Date.now()}.${ext}`;
   const { error } = await supabase.storage.from('songs').upload(path, file, { upsert: false });
   if (error) throw new Error(`Audio upload failed: ${error.message}`);
   return supabase.storage.from('songs').getPublicUrl(path).data.publicUrl;
 }
 
-async function uploadProcessedToSupabase(replicateUrl, folder) {
+async function uploadProcessedToSupabase(replicateUrl, folder, title, artist) {
   if (!supabase) throw new Error('Supabase not configured.');
   const resp = await fetch(replicateUrl);
   if (!resp.ok) throw new Error(`Could not download processed audio (${resp.status})`);
   const blob = await resp.blob();
-  const path = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2, 7)}.mp3`;
+  const slug = makeSongSlug(title, artist);
+  const uid7 = Math.random().toString(36).slice(2, 9);
+  const path = `${folder}/${slug}_${uid7}.mp3`;
   const { error } = await supabase.storage.from('songs').upload(path, blob, { contentType: 'audio/mpeg', upsert: false });
   if (error) throw new Error(`Failed to save to ${folder}: ${error.message}`);
   return supabase.storage.from('songs').getPublicUrl(path).data.publicUrl;
@@ -36,23 +50,65 @@ async function deleteSupabaseFile(publicUrl) {
 
 async function saveSongData(song) {
   if (!supabase) return;
-  const blob = new Blob([JSON.stringify(song)], { type: 'application/json' });
+  const slug = makeSongSlug(song.title, song.artist);
+  const path = song._libraryPath || `library/${slug}_${song.id}.json`;
+  const stored = { ...song, _libraryPath: path };
+  const blob = new Blob([JSON.stringify(stored)], { type: 'application/json' });
   const { error } = await supabase.storage.from('songs')
-    .upload(`library/${song.id}.json`, blob, { upsert: true, contentType: 'application/json' });
+    .upload(path, blob, { upsert: true, contentType: 'application/json' });
   if (error) console.warn('Cloud save failed:', error.message);
+  return stored;
 }
 
 async function archiveDeletedSong(song) {
   if (!supabase) return;
+  const libraryPath = song._libraryPath || `library/${song.id}.json`;
+  const slug = makeSongSlug(song.title, song.artist);
+  const deletedPath = `deleted/${slug}_${song.id}.json`;
   try {
-    const { data } = await supabase.storage.from('songs').download(`library/${song.id}.json`);
+    const { data } = await supabase.storage.from('songs').download(libraryPath);
     if (data) {
       const current = JSON.parse(await data.text());
-      const archived = new Blob([JSON.stringify({ ...current, _deleted: true, _deletedAt: Date.now() })], { type: 'application/json' });
-      await supabase.storage.from('songs').upload(`deleted/${song.id}.json`, archived, { upsert: true, contentType: 'application/json' });
+      const archived = new Blob([JSON.stringify({ ...current, _deleted: true, _deletedAt: Date.now(), _deletedPath: deletedPath })], { type: 'application/json' });
+      await supabase.storage.from('songs').upload(deletedPath, archived, { upsert: true, contentType: 'application/json' });
     }
   } catch (e) { console.warn('Could not archive:', e.message); }
-  await supabase.storage.from('songs').remove([`library/${song.id}.json`]);
+  await supabase.storage.from('songs').remove([libraryPath]);
+}
+
+// Lists archived (deleted) songs from Supabase deleted/ folder.
+async function loadDeletedSongs() {
+  if (!supabase) return [];
+  try {
+    const { data: files } = await supabase.storage.from('songs').list('deleted');
+    if (!files?.length) return [];
+    const songs = await Promise.all(
+      files.filter(f => f.name.endsWith('.json')).map(async f => {
+        const { data } = await supabase.storage.from('songs').download(`deleted/${f.name}`);
+        if (!data) return null;
+        try { return JSON.parse(await data.text()); } catch { return null; }
+      })
+    );
+    return songs.filter(Boolean).sort((a, b) => (b._deletedAt || 0) - (a._deletedAt || 0));
+  } catch { return []; }
+}
+
+// Permanently removes audio files for all archived songs, then deletes the archive entries.
+async function purgeDeletedSongs() {
+  if (!supabase) return 0;
+  const deleted = await loadDeletedSongs();
+  if (!deleted.length) return 0;
+  const toRemove = [];
+  for (const song of deleted) {
+    const audioPath = song.audioUrl?.match(/\/storage\/v1\/object\/public\/songs\/(.+)$/)?.[1];
+    const vocalsPath = song.vocalsUrl?.match(/\/storage\/v1\/object\/public\/songs\/(.+)$/)?.[1];
+    if (audioPath) toRemove.push(decodeURIComponent(audioPath));
+    if (vocalsPath) toRemove.push(decodeURIComponent(vocalsPath));
+    const archivePath = song._deletedPath || `deleted/${song.id}.json`;
+    toRemove.push(archivePath);
+  }
+  if (toRemove.length) await supabase.storage.from('songs').remove(toRemove);
+  return deleted.length;
 }
 
 async function loadLibrary() {
@@ -547,7 +603,30 @@ function EditorScreen({ song, onSave, onBack }) {
 
         <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
           <button className="btn btn-secondary" onClick={addLine}><i className="ti ti-plus" aria-hidden="true" /> Add line</button>
-          <button className="btn btn-secondary" onClick={() => setLines(prev => [...prev].sort((a, b) => a.time - b.time))}><i className="ti ti-arrows-sort" aria-hidden="true" /> Sort by time</button>
+          <button className="btn btn-secondary" onClick={() => {
+            setLines(prev => {
+              // Silently commit any active chip draft before sorting
+              const committed = (activeChipLine !== null && activeChipIdx !== null)
+                ? prev.map((line, i) => {
+                    if (i !== activeChipLine) return line;
+                    const nw = line.words.map((w, j) => j !== activeChipIdx ? w : {
+                      word: draftWord.trim() || w.word,
+                      start: parseWordTime(draftStart),
+                      end: parseWordTime(draftEnd),
+                    });
+                    return { ...line, words: nw, text: nw.map(w => w.word).join(' '), time: nw[0]?.start ?? line.time, endTime: nw[nw.length - 1]?.end ?? line.endTime };
+                  })
+                : prev;
+              // Sort lines by time, then sort words within each line
+              return [...committed]
+                .sort((a, b) => a.time - b.time)
+                .map(line => {
+                  if (!line.words?.length) return line;
+                  const sw = [...line.words].sort((a, b) => a.start - b.start);
+                  return { ...line, words: sw, time: sw[0]?.start ?? line.time, endTime: sw[sw.length - 1]?.end ?? line.endTime, text: sw.map(w => w.word).join(' ') };
+                });
+            });
+          }}><i className="ti ti-arrows-sort" aria-hidden="true" /> Sort by time</button>
         </div>
       </div>
     </div>
@@ -556,7 +635,7 @@ function EditorScreen({ song, onSave, onBack }) {
 
 
 // ── ADD SONG SCREEN ───────────────────────────────────────────────────────────
-function AddSongScreen({ onSave }) {
+function AddSongScreen({ songs = [], onSave }) {
   const [title, setTitle]         = useState('');
   const [artist, setArtist]       = useState('');
   const [origFile, setOrigFile]   = useState(null);
@@ -593,7 +672,7 @@ function AddSongScreen({ onSave }) {
     try {
       // ── Upload ──────────────────────────────────────────────────────────────
       setStage('uploading');
-      originalUrl = await uploadAudioToSupabase(origFile);
+      originalUrl = await uploadAudioToSupabase(origFile, title, artist);
       if (cancelRef.current.aborted) return;
 
       const lrcResult = title.trim() ? await lrcSearch(artist, title) : null;
@@ -619,8 +698,8 @@ function AddSongScreen({ onSave }) {
         stopTick('demucs'); setDemucsState({ status: 'done' });
 
         const ir = getInstrumental(demucsOut); const vr = getVocals(demucsOut);
-        if (ir) instrumentalUrl = await uploadProcessedToSupabase(ir, 'instrumentals');
-        if (vr) vocalsUrl       = await uploadProcessedToSupabase(vr, 'vocals');
+        if (ir) instrumentalUrl = await uploadProcessedToSupabase(ir, 'instrumentals', title, artist);
+        if (vr) vocalsUrl       = await uploadProcessedToSupabase(vr, 'vocals', title, artist);
         if (originalUrl) await deleteSupabaseFile(originalUrl);
       } catch (e) {
         stopTick('demucs'); demucsErr = e.message; setDemucsState({ status: 'error' });
@@ -803,6 +882,17 @@ function AddSongScreen({ onSave }) {
     <div className="screen" style={{ padding: '8px 18px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div className="mode-tabs">{['auto', 'manual'].map(m => (<button key={m} className={`mode-tab${mode === m ? ' active' : ''}`} onClick={() => setMode(m)}><i className={`ti ${m === 'auto' ? 'ti-sparkles' : 'ti-upload'}`} aria-hidden="true" style={{ marginRight: 5, fontSize: 13 }} />{m === 'auto' ? 'Auto · Replicate' : 'Manual'}</button>))}</div>
       <div className="card"><span className="card-label">Song details</span><div className="field"><input placeholder="Song title *" value={title} onChange={e => setTitle(e.target.value)} /></div><div className="field"><input placeholder="Artist name" value={artist} onChange={e => setArtist(e.target.value)} /></div></div>
+      {/* Duplicate detection — inline warning */}
+      {(() => {
+        if (!title.trim()) return null;
+        const t = title.trim().toLowerCase(), a = artist.trim().toLowerCase();
+        const dup = songs.find(s => s.title.toLowerCase() === t && (s.artist || '').toLowerCase() === a);
+        return dup ? (
+          <div className="warn-box" style={{ marginTop: -6 }}>
+            <i className="ti ti-alert-triangle" aria-hidden="true" /> Already in library: <strong>{dup.title}</strong>{dup.artist ? ` — ${dup.artist}` : ''}
+          </div>
+        ) : null;
+      })()}
       {mode === 'auto' && (<><div className="card"><span className="card-label">Upload original song</span><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Demucs separates vocals. WhisperX aligns word timestamps. Claude corrects text using LRClib. Original deleted after.</p><label className={`upload-zone${origFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} /><i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}</label></div><div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first for correct lyrics text. WhisperX provides timing. Claude combines both.</div><button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}><i className="ti ti-sparkles" aria-hidden="true" /> Process with Replicate + AI</button></>)}
       {mode === 'manual' && (<><div className="card"><span className="card-label">Lyrics</span><button className="btn btn-secondary btn-full" style={{ marginBottom: 12 }} onClick={async () => { if (!title.trim()) return; const res = await lrcSearch(artist, title); if (res?.plain) setLyricsText(res.plain); else alert('Not found on LRClib.'); }}><i className="ti ti-search" aria-hidden="true" /> Search LRClib</button><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder={"Paste lyrics here…\n\nOr LRC format:\n[00:12.34]First line"} rows={7} /></div><div className="card"><span className="card-label">Instrumental track</span><label className={`upload-zone${instrFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setInstrFile(e.target.files[0])} /><i className={`ti ${instrFile ? 'ti-check' : 'ti-music'}`} style={{ color: instrFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{instrFile ? <p className="filename">{instrFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Upload karaoke / instrumental</p><p>MP3, WAV, M4A</p></>}</label></div><button className="btn btn-primary btn-full" onClick={handleSave} disabled={!title.trim()}><i className="ti ti-plus" aria-hidden="true" /> Add to library</button></>)}
     </div>
@@ -1021,18 +1111,75 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
 }
 
 
-// ── SETTINGS SCREEN ───────────────────────────────────────────────────────────
+// ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
 function SettingsScreen({ settings, onSettingsChange }) {
   const hasSupabase = !!(SUPA_URL && SUPA_KEY);
+  const [deletedSongs, setDeletedSongs]   = useState(null); // null = not loaded
+  const [loadingDeleted, setLoadingDeleted] = useState(false);
+  const [purging, setPurging]             = useState(false);
+  const [purgeResult, setPurgeResult]     = useState(null);
+
+  async function handleLoadDeleted() {
+    setLoadingDeleted(true);
+    const songs = await loadDeletedSongs();
+    setDeletedSongs(songs);
+    setLoadingDeleted(false);
+  }
+
+  async function handlePurge() {
+    if (!window.confirm(`Permanently delete audio files for all ${deletedSongs.length} archived songs? This cannot be undone.`)) return;
+    setPurging(true);
+    const count = await purgeDeletedSongs();
+    setDeletedSongs([]);
+    setPurgeResult(count);
+    setPurging(false);
+  }
+
   return (
     <div className="screen">
       <div className="page-header"><div><div className="page-title">Settings</div><div className="page-sub">App configuration</div></div></div>
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div className={hasSupabase ? 'success-box' : 'warn-box'}><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className={`ti ${hasSupabase ? 'ti-check' : 'ti-alert-triangle'}`} aria-hidden="true" /> Supabase — {hasSupabase ? 'connected' : 'not configured'}</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{hasSupabase ? 'Songs and audio saved to cloud. Deleted songs archived.' : 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.'}</p></div>
+
+        {/* Storage management */}
+        {hasSupabase && (
+          <div className="card">
+            <span className="card-label">Storage — archived songs</span>
+            <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px', lineHeight: 1.6 }}>
+              Deleted songs are archived (not immediately removed). Audio files stay in storage until you purge them here.
+            </p>
+            {deletedSongs === null ? (
+              <button className="btn btn-secondary" onClick={handleLoadDeleted} disabled={loadingDeleted}>
+                {loadingDeleted ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Loading…</> : <><i className="ti ti-archive" aria-hidden="true" /> View archived songs</>}
+              </button>
+            ) : deletedSongs.length === 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>{purgeResult != null ? `✓ Purged ${purgeResult} song${purgeResult !== 1 ? 's' : ''}` : 'No archived songs.'}</p>
+            ) : (
+              <>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12, maxHeight: 220, overflowY: 'auto' }}>
+                  {deletedSongs.map(s => (
+                    <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+                      <i className="ti ti-music" style={{ fontSize: 14, color: 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ fontSize: 13, fontWeight: 700, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</p>
+                        <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{s.artist || 'Unknown artist'}{s._deletedAt ? ` · deleted ${new Date(s._deletedAt).toLocaleDateString()}` : ''}</p>
+                      </div>
+                      <span style={{ fontSize: 10, color: s.audioUrl ? 'var(--muted)' : 'var(--rose)', flexShrink: 0 }}>{s.audioUrl ? '● audio' : '○ no audio'}</span>
+                    </div>
+                  ))}
+                </div>
+                <button className="btn btn-secondary" onClick={handlePurge} disabled={purging} style={{ color: 'var(--rose)', borderColor: 'var(--rose)' }}>
+                  {purging ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Purging…</> : <><i className="ti ti-trash" aria-hidden="true" /> Purge {deletedSongs.length} archived song{deletedSongs.length !== 1 ? 's' : ''}</>}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
         <div className="card"><span className="card-label">Guide vocals — default level</span><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className="ti ti-microphone" style={{ fontSize: 18, color: settings.defaultGuideVolume > 0 ? 'var(--amber)' : 'var(--muted)' }} aria-hidden="true" /><input type="range" min="0" max="1" step="0.05" value={settings.defaultGuideVolume ?? 0} onChange={e => onSettingsChange({ defaultGuideVolume: parseFloat(e.target.value) })} style={{ flex: 1 }} /><span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>{settings.defaultGuideVolume > 0 ? `${Math.round((settings.defaultGuideVolume ?? 0) * 100)}%` : 'Off'}</span></div></div>
         <div className="card"><span className="card-label">After a song finishes</span><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>{[{ value: false, label: 'Stop playing', sub: 'Player pauses at the end (default)' }, { value: true, label: 'Play next random song', sub: 'Picks a random song automatically' }].map(opt => (<label key={String(opt.value)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '4px 0' }}><div style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '2px solid', borderColor: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'var(--border)', background: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{(settings.autoPlayRandom ?? false) === opt.value && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />}</div><div><p style={{ fontSize: 14, margin: 0 }}>{opt.label}</p><p style={{ fontSize: 11, color: 'var(--muted)', margin: '1px 0 0' }}>{opt.sub}</p></div><input type="radio" style={{ display: 'none' }} checked={(settings.autoPlayRandom ?? false) === opt.value} onChange={() => onSettingsChange({ autoPlayRandom: opt.value })} /></label>))}</div></div>
         <div className="card"><span className="card-label">Keyboard shortcuts</span><div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 13 }}>{[['Space','Play / pause'],['Esc','Close player'],['←','Restart (or prev song if within 2s)'],['→','Skip +10s (or next random)'],['M','Toggle guide vocals mute'],['R','Toggle random mode'],['F','Fullscreen']].map(([k,v]) => (<><span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span><span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span></>))}</div></div>
-        <div className="success-box"><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Replicate + Claude — server-side</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Demucs + WhisperX via <code>/api/replicate</code>. Claude correction via <code>/api/claude</code>. Keys in Vercel env vars.</p></div>
+        <div className="success-box"><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Processing — server-side</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Vocal separation, transcription, and AI lyrics correction run via <code>/api/</code> endpoints. Keys in Vercel env vars.</p></div>
       </div>
     </div>
   );
@@ -1066,7 +1213,7 @@ export default function App() {
   function skipToNextRandom() { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) navigateToSong(next); }
 
   function handleSettingsChange(patch) { const u = { ...settings, ...patch }; setSettings(u); persistSettings(u); }
-  async function handleAddSong(song)   { const s = { ...song, addedAt: Date.now() }; setSongs(prev => [s, ...prev]); setTab('library'); await saveSongData(s); }
+  async function handleAddSong(song)   { const s = { ...song, addedAt: Date.now() }; setSongs(prev => [s, ...prev]); setTab('library'); const stored = await saveSongData(s); if (stored) setSongs(prev => prev.map(x => x.id === s.id ? stored : x)); }
   async function handleSaveEdited(s)   { setSongs(prev => prev.map(x => x.id === s.id ? { ...x, ...s } : x)); setEditingSong(null); await saveSongData(s); }
   async function handleDeleteSong(song) { setSongs(prev => prev.filter(s => s.id !== song.id)); await archiveDeletedSong(song); }
 
@@ -1085,7 +1232,7 @@ export default function App() {
       {loading && (<div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading your library…</div>)}
       {!loading && (<>
         {tab === 'library'  && <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} onStartRandom={startRandomMode} />}
-        {tab === 'add'      && <AddSongScreen onSave={handleAddSong} />}
+        {tab === 'add'      && <AddSongScreen songs={songs} onSave={handleAddSong} />}
         {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} />}
         <nav className="bottom-nav">
           <button className={`nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /> Library</button>

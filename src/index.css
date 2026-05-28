@@ -254,7 +254,7 @@ textarea { resize: vertical; line-height: 1.7; }
   line-height: 1.45;
 }
 .lyric-line.past   { font-size: 13px; color: var(--muted); opacity: 0.35; padding: 5px 0; font-style: italic; }
-.lyric-line.next1  { font-size: 15px; color: var(--muted); opacity: 0.5;  padding: 6px 0; }
+.lyric-line.next1  { font-size: 20px; color: var(--muted); opacity: 0.45; padding: 6px 0; }
 .lyric-line.next2  { font-size: 13px; color: var(--muted); opacity: 0.25; padding: 5px 0; }
 .lyric-line.active {
   font-size: 24px; font-weight: 700; color: var(--amber);
@@ -684,7 +684,8 @@ textarea { resize: vertical; line-height: 1.7; }
     font-size: clamp(32px, 5.5vw, 62px) !important;
   }
   .player-screen .lyric-line.next1 {
-    font-size: clamp(18px, 2.8vw, 30px) !important;
+    font-size: clamp(32px, 5.5vw, 62px) !important;
+    opacity: 0.45;
   }
   .player-screen .lyric-line.past,
   .player-screen .lyric-line.next2 {
@@ -836,15 +837,16 @@ textarea { resize: vertical; line-height: 1.7; }
   border: 1px solid rgba(255,255,255,0.08);
 }
 .lmt-btn {
-  padding: 4px 9px;
-  font-size: 13px;
+  padding: 5px 12px;
+  font-size: 14px;
   font-weight: 700;
   cursor: pointer;
   color: var(--muted);
   background: transparent;
   border: none;
   line-height: 1.2;
-  font-family: var(--font-ui);
+  font-family: monospace;
+  letter-spacing: 0.02em;
   transition: background 0.12s, color 0.12s;
 }
 .lmt-btn:hover:not(.lmt-active) { color: var(--text); }
