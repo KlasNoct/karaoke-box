@@ -175,6 +175,23 @@ async function findOrphanedFiles() {
   } catch (e) { console.warn('findOrphanedFiles:', e.message); return []; }
 }
 
+// Queue persistence — completed/failed items survive page reloads for 24 h.
+// Waiting/processing items are never persisted (they'd be stale on reload).
+const QUEUE_KEY = 'karaklas_queue_v1';
+function loadPersistedQueue() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]');
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    return saved.filter(i => (i.status === 'done' || i.status === 'failed') && (i.completedAt || 0) > cutoff);
+  } catch { return []; }
+}
+function persistQueue(queue) {
+  try {
+    const toSave = queue.filter(i => (i.status === 'done' || i.status === 'failed') && i.completedAt);
+    localStorage.setItem(QUEUE_KEY, JSON.stringify(toSave));
+  } catch {}
+}
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 const SETTINGS_KEY = 'karaoke_settings';
 const loadSettings   = () => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } };
@@ -749,275 +766,93 @@ function EditorScreen({ song, onSave, onBack }) {
 
 
 // ── ADD SONG SCREEN ───────────────────────────────────────────────────────────
+// Simplified: auto mode queues songs for batch processing,
+// manual mode adds directly to library with existing karaoke track.
 function AddSongScreen({ songs = [], onSave, onAddToQueue }) {
-  const [title, setTitle]         = useState('');
-  const [artist, setArtist]       = useState('');
-  const [origFile, setOrigFile]   = useState(null);
-  const [instrFile, setInstrFile] = useState(null);
+  const [title, setTitle]           = useState('');
+  const [artist, setArtist]         = useState('');
+  const [origFile, setOrigFile]     = useState(null);
+  const [instrFile, setInstrFile]   = useState(null);
   const [lyricsText, setLyricsText] = useState('');
-  const [mode, setMode]           = useState('auto');
-  const [stage, setStage]         = useState('idle');
-  const [demucsState, setDemucsState]   = useState({ status: 'waiting', elapsed: 0 });
-  const [whisperState, setWhisperState] = useState({ status: 'waiting', elapsed: 0 });
-  const [claudeState, setClaudeState]   = useState({ status: 'waiting', elapsed: 0 });
-  const [lrcFound, setLrcFound]   = useState(false);
-  const [result, setResult]       = useState(null);
-  const [errorMsg, setErrorMsg]   = useState('');
-  const cancelRef = useRef({ aborted: false });
-  const timers = useRef({});
-
-  function startTick(k, s) { let n = 0; timers.current[k] = setInterval(() => { n++; s(p => ({ ...p, elapsed: n })); }, 1000); }
-  function stopTick(k) { clearInterval(timers.current[k]); delete timers.current[k]; }
-  useEffect(() => () => { cancelRef.current.aborted = true; Object.values(timers.current).forEach(clearInterval); }, []);
-
-  async function handleProcess() {
-    if (!origFile || !title.trim()) return;
-    cancelRef.current = { aborted: false };
-    setDemucsState({ status: 'waiting', elapsed: 0 });
-    setWhisperState({ status: 'waiting', elapsed: 0 });
-    setClaudeState({ status: 'waiting', elapsed: 0 });
-    setResult(null); setErrorMsg('');
-
-    let originalUrl = null;
-    let instrumentalUrl = null, vocalsUrl = null;
-    let lyrics = [], lyricsAlt = [], lyricsType = 'none';
-    let demucsErr = null, whisperErr = null, claudeApplied = false;
-
-    try {
-      // ── Upload ──────────────────────────────────────────────────────────────
-      setStage('uploading');
-      originalUrl = await uploadAudioToSupabase(origFile, title, artist);
-      if (cancelRef.current.aborted) return;
-
-      const lrcResult = title.trim() ? await lrcSearch(artist, title) : null;
-      const hadLrc = !!(lrcResult?.synced?.length > 0);
-      setLrcFound(hadLrc);
-      const whisperPrompt = lrcResult?.plain || null;
-
-      setStage('processing');
-
-      // ── Step 1: Demucs ───────────────────────────────────────────────────────
-      setDemucsState({ status: 'running' });
-      startTick('demucs', setDemucsState);
-      const demucsId = await repCreate(DEMUCS_VERSION, {
-        audio: originalUrl, model_name: 'htdemucs', stem: 'vocals',
-        shifts: 1, overlap: 0.25, output_format: 'mp3',
-      });
-
-      try {
-        const demucsOut = await repPoll(demucsId, (st, el) => {
-          if (!cancelRef.current.aborted)
-            setDemucsState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el });
-        }, cancelRef.current);
-        stopTick('demucs'); setDemucsState({ status: 'done' });
-
-        const ir = getInstrumental(demucsOut); const vr = getVocals(demucsOut);
-        if (ir) instrumentalUrl = await uploadProcessedToSupabase(ir, 'instrumentals', title, artist);
-        if (vr) vocalsUrl       = await uploadProcessedToSupabase(vr, 'vocals', title, artist);
-        if (originalUrl) await deleteSupabaseFile(originalUrl);
-      } catch (e) {
-        stopTick('demucs'); demucsErr = e.message; setDemucsState({ status: 'error' });
-      }
-
-      if (cancelRef.current.aborted) return;
-
-      // ── Step 2: WhisperX on vocal stem (isolated vocals = better accuracy) ───
-      // Uses vocalsUrl (clean vocals from Demucs) instead of original mixed audio.
-      const whisperSource = vocalsUrl || originalUrl;
-      setWhisperState({ status: 'running' });
-      startTick('whisper', setWhisperState);
-
-      let whisperOut = null;
-      try {
-        const whisperPredId = await repCreate(WHISPERX_VERSION, {
-          audio_file: whisperSource,
-          align_output: true,
-          temperature: 0,
-          ...(whisperPrompt ? { initial_prompt: whisperPrompt } : {}),
-        });
-        whisperOut = await repPoll(whisperPredId, (st, el) => {
-          if (!cancelRef.current.aborted)
-            setWhisperState({ status: st === 'succeeded' ? 'done' : st === 'failed' ? 'error' : 'running', elapsed: el });
-        }, cancelRef.current);
-        stopTick('whisper'); setWhisperState({ status: 'done' });
-
-        console.log('[KaraKlas] WhisperX segments:', whisperOut?.segments?.length ?? 0);
-        console.log('[KaraKlas] First segment words:', whisperOut?.segments?.[0]?.words ?? 'NONE');
-        lyricsAlt = whisperToLines(whisperOut);
-        console.log(`[KaraKlas] WhisperX lines: ${lyricsAlt.length}, words: ${lyricsAlt.reduce((n,l)=>n+(l.words?.length||0),0)}`);
-      } catch (e) {
-        stopTick('whisper'); whisperErr = e.message; setWhisperState({ status: 'error' });
-      }
-
-      if (cancelRef.current.aborted) return;
-
-      // ── Step 3: Claude correction ────────────────────────────────────────────
-      if (whisperOut && hadLrc && lrcResult?.synced?.length > 0) {
-        setClaudeState({ status: 'running' });
-        startTick('claude', setClaudeState);
-        const corrected = await callClaudeCorrection(whisperOut, lrcResult.synced);
-        stopTick('claude');
-
-        if (corrected?.length > 0) {
-          lyrics = corrected; lyricsType = 'synced'; claudeApplied = true;
-          setClaudeState({ status: 'done' });
-        } else {
-          // Claude failed — mergeWordsIntoLines keeps LRC line structure
-          lyrics = mergeWordsIntoLines(lrcResult.synced, whisperOut);
-          lyricsType = 'synced';
-          setClaudeState({ status: 'error' });
-        }
-      } else if (whisperOut) {
-        lyrics = lyricsAlt; lyricsType = lyricsAlt.length > 0 ? 'synced' : 'none';
-        setClaudeState({ status: 'skipped' });
-      } else if (hadLrc) {
-        // WhisperX failed entirely — fall back to LRClib
-        lyrics = lrcResult.synced.length > 0 ? lrcResult.synced
-               : lrcResult.plain.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3, text: t, color: null, words: [] }));
-        lyricsType = lrcResult.synced.length > 0 ? 'synced' : 'plain';
-        setClaudeState({ status: 'skipped' });
-      }
-
-      setResult({ instrumentalUrl, vocalsUrl, lyrics, lyricsAlt, lyricsType, demucsErr, whisperErr, claudeApplied, hadLrc });
-      setStage('review');
-    } catch (e) {
-      Object.values(timers.current).forEach(clearInterval);
-      setErrorMsg(e.message); setStage('error');
-    }
-  }
+  const [mode, setMode]             = useState('auto');
 
   function handleSave() {
-    const r = result || {};
     const textLines = lyricsText.trim()
       ? parseLRC(lyricsText).length > 0 ? parseLRC(lyricsText)
         : lyricsText.split('\n').filter(Boolean).map((t, i) => ({ id: uid(), time: i * 3.5, text: t, color: null, words: [] }))
       : [];
-    const finalLyrics = r.lyrics?.length > 0 ? r.lyrics : textLines;
     onSave({
       id: uid(), title: title.trim(), artist: artist.trim(),
-      audioUrl: r.instrumentalUrl || (instrFile ? URL.createObjectURL(instrFile) : null),
-      vocalsUrl: r.vocalsUrl || null,
-      hasAudio: !!(r.instrumentalUrl || instrFile),
-      lyrics: finalLyrics,
-      lyricsAlt: r.lyricsAlt?.length > 0 ? r.lyricsAlt : [],
-      lyricsType: r.lyrics?.length > 0 ? r.lyricsType : finalLyrics.length > 0 ? 'plain' : 'none',
-      lyricsSource: 'primary',
-      plainLyrics: lyricsText,
+      audioUrl: instrFile ? URL.createObjectURL(instrFile) : null,
+      vocalsUrl: null, hasAudio: !!instrFile,
+      lyrics: textLines, lyricsAlt: [],
+      lyricsType: textLines.length > 0 ? 'plain' : 'none',
+      lyricsSource: 'primary', plainLyrics: lyricsText,
     });
   }
 
-  if (stage === 'uploading') return (
-    <div className="screen" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, textAlign: 'center', padding: '0 32px' }}>
-      <i className="ti ti-cloud-upload spin" style={{ fontSize: 40, color: 'var(--muted)' }} aria-hidden="true" />
-      <p style={{ fontWeight: 700, fontSize: 16 }}>Uploading "{title}"…</p>
-    </div>
-  );
-
-  if (stage === 'processing') {
-    const claudeSub = lrcFound
-      ? 'Claude maps correct lyrics text to WhisperX timestamps'
-      : 'Skipped — no LRClib reference available';
-    const steps = [
-      { key: 'demucs',  icon: 'ti-scissors',        label: 'Separating vocals',      sub: 'Demucs — saves instrumental + vocal stem', ...demucsState },
-      { key: 'whisper', icon: 'ti-text-recognition', label: 'Word timing via WhisperX', sub: 'WhisperX on isolated vocal stem — per-word timestamps', ...whisperState },
-      { key: 'claude',  icon: 'ti-sparkles',         label: 'AI lyrics correction',   sub: claudeSub, ...claudeState },
-    ];
-    const statusColour = s => s === 'done' ? '#20bf6b' : s === 'error' ? 'var(--rose)' : s === 'skipped' ? 'var(--muted)' : 'var(--muted)';
-    const statusText   = s => s === 'done' ? '✓ Done' : s === 'error' ? 'Failed' : s === 'skipped' ? 'Skipped' : s === 'running' ? '…' : '…';
-    return (
-      <div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <p style={{ fontWeight: 700, fontSize: 17, marginBottom: 2 }}>Processing "{title}"…</p>
-        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.6 }}>Steps run in sequence. WhisperX uses the isolated vocal track for better accuracy.</p>
-        {steps.map(step => (
-          <div key={step.key} className="step-row">
-            <i className={`ti ${step.icon}${step.status === 'running' ? ' spin' : ''}`} style={{ color: statusColour(step.status) }} aria-hidden="true" />
-            <div className="step-info"><div className="step-title">{step.label}</div><div className="step-sub">{step.sub}</div></div>
-            <div className="step-status" style={{ color: statusColour(step.status) }}>
-              {step.status === 'running' ? fmt(step.elapsed) : statusText(step.status)}
-            </div>
-          </div>
-        ))}
-        <button className="btn btn-secondary" onClick={() => { cancelRef.current.aborted = true; setStage('idle'); }}><i className="ti ti-x" aria-hidden="true" /> Cancel</button>
-      </div>
-    );
+  function handleAddToQueue() {
+    if (!origFile || !title.trim()) return;
+    onAddToQueue?.({ file: origFile, title: title.trim(), artist: artist.trim() });
+    setTitle(''); setArtist(''); setOrigFile(null);
   }
 
-  if (stage === 'review' && result) {
-    const primaryWordCount = result.lyrics.reduce((n, l) => n + (l.words?.length || 0), 0);
-    const altWordCount     = result.lyricsAlt.reduce((n, l) => n + (l.words?.length || 0), 0);
-    return (
-      <div className="screen" style={{ padding: '16px 18px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <p style={{ fontWeight: 700, fontSize: 17, margin: '6px 0 0' }}>Review & save</p>
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <i className={`ti ${result.instrumentalUrl ? 'ti-check' : 'ti-alert-triangle'}`} style={{ fontSize: 20, color: result.instrumentalUrl ? '#20bf6b' : 'var(--amber)', flexShrink: 0 }} aria-hidden="true" />
-            <div><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>{result.instrumentalUrl ? 'Karaoke track saved' : 'Vocal separation failed'}</p>{result.vocalsUrl && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>Vocal stem saved</p>}</div>
-          </div>
-          <div className="divider" style={{ margin: 0 }} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <i className={`ti ${primaryWordCount > 0 ? 'ti-check' : result.lyrics.length > 0 ? 'ti-alert-triangle' : 'ti-x'}`} style={{ fontSize: 20, color: primaryWordCount > 0 ? '#20bf6b' : result.lyrics.length > 0 ? 'var(--amber)' : 'var(--rose)', flexShrink: 0 }} aria-hidden="true" />
-            <div>
-              <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>
-                {result.claudeApplied ? 'AI-corrected lyrics' : result.hadLrc ? 'LRClib fallback (Claude failed)' : 'WhisperX transcription'}
-                {' — '}{result.lyrics.length} lines{primaryWordCount > 0 ? `, ${primaryWordCount} words` : ''}
-              </p>
-              {altWordCount > 0 && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>WhisperX backup also saved ({altWordCount} words) — toggle in editor</p>}
-            </div>
-          </div>
-        </div>
-        {result.lyrics.length > 0 && (
-          <div className="card" style={{ padding: '12px 14px' }}>
-            <span className="card-label">Preview (primary source)</span>
-            <div style={{ maxHeight: 170, overflowY: 'auto' }}>
-              {result.lyrics.slice(0, 10).map((l, i) => (
-                <div key={i} style={{ display: 'flex', gap: 10, borderBottom: '1px solid var(--border)', padding: '3px 0', fontSize: 13 }}>
-                  <span style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--muted)', flexShrink: 0 }}>{fmt(l.time)}</span>
-                  <span>{l.text}</span>
-                </div>
-              ))}
-              {result.lyrics.length > 10 && <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>…and {result.lyrics.length - 10} more lines</p>}
-            </div>
-          </div>
-        )}
-        <p className="pin-note"><i className="ti ti-pin" aria-hidden="true" /> Use ✏️ to edit lyrics. If AI-corrected looks wrong, toggle to WhisperX in the editor.</p>
-        <button className="btn btn-process btn-full" onClick={handleSave}><i className="ti ti-device-floppy" aria-hidden="true" /> Save "{title}" to library</button>
-      </div>
-    );
-  }
-
-  if (stage === 'error') return (
-    <div className="screen" style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div className="warn-box"><p style={{ fontWeight: 700, marginBottom: 6 }}><i className="ti ti-alert-triangle" aria-hidden="true" /> Processing failed</p><p style={{ margin: 0, wordBreak: 'break-word' }}>{errorMsg}</p></div>
-      <button className="btn btn-secondary btn-full" onClick={() => { setStage('idle'); setErrorMsg(''); }}><i className="ti ti-refresh" aria-hidden="true" /> Try again</button>
-    </div>
-  );
+  const duplicate = (() => {
+    if (!title.trim()) return null;
+    const t = title.trim().toLowerCase(), a = artist.trim().toLowerCase();
+    return songs.find(s => s.title.toLowerCase() === t && (s.artist || '').toLowerCase() === a) || null;
+  })();
 
   return (
-    <div className="screen" style={{ padding: '8px 18px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div className="mode-tabs">{['auto', 'manual'].map(m => (<button key={m} className={`mode-tab${mode === m ? ' active' : ''}`} onClick={() => setMode(m)}><i className={`ti ${m === 'auto' ? 'ti-sparkles' : 'ti-upload'}`} aria-hidden="true" style={{ marginRight: 5, fontSize: 13 }} />{m === 'auto' ? 'Auto · Replicate' : 'Manual'}</button>))}</div>
-      <div className="card"><span className="card-label">Song details</span><div className="field"><input placeholder="Song title *" value={title} onChange={e => setTitle(e.target.value)} /></div><div className="field"><input placeholder="Artist name" value={artist} onChange={e => setArtist(e.target.value)} /></div></div>
-      {/* Duplicate detection — inline warning */}
-      {(() => {
-        if (!title.trim()) return null;
-        const t = title.trim().toLowerCase(), a = artist.trim().toLowerCase();
-        const dup = songs.find(s => s.title.toLowerCase() === t && (s.artist || '').toLowerCase() === a);
-        return dup ? (
-          <div className="warn-box" style={{ marginTop: -6 }}>
-            <i className="ti ti-alert-triangle" aria-hidden="true" /> Already in library: <strong>{dup.title}</strong>{dup.artist ? ` — ${dup.artist}` : ''}
+    <div style={{ padding: '8px 18px 28px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="mode-tabs">{['auto', 'manual'].map(m => (<button key={m} className={`mode-tab${mode === m ? ' active' : ''}`} onClick={() => setMode(m)}><i className={`ti ${m === 'auto' ? 'ti-sparkles' : 'ti-upload'}`} aria-hidden="true" style={{ marginRight: 5, fontSize: 13 }} />{m === 'auto' ? 'Auto · AI' : 'Manual'}</button>))}</div>
+      <div className="card">
+        <span className="card-label">Song details</span>
+        <div className="field"><input placeholder="Song title *" value={title} onChange={e => setTitle(e.target.value)} /></div>
+        <div className="field"><input placeholder="Artist name" value={artist} onChange={e => setArtist(e.target.value)} /></div>
+      </div>
+      {duplicate && (
+        <div className="warn-box" style={{ marginTop: -6 }}>
+          <i className="ti ti-alert-triangle" aria-hidden="true" /> Already in library: <strong>{duplicate.title}</strong>{duplicate.artist ? ` — ${duplicate.artist}` : ''}
+        </div>
+      )}
+
+      {mode === 'auto' && (
+        <>
+          <div className="card">
+            <span className="card-label">Upload original song</span>
+            <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>AI separates vocals, transcribes lyrics, and corrects timing. Original file is deleted after processing.</p>
+            <label className={`upload-zone${origFile ? ' has-file' : ''}`}>
+              <input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} />
+              <i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />
+              {origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}
+            </label>
           </div>
-        ) : null;
-      })()}
-      {mode === 'auto' && (<><div className="card"><span className="card-label">Upload original song</span><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Demucs separates vocals. WhisperX aligns word timestamps. Claude corrects text using LRClib. Original deleted after.</p><label className={`upload-zone${origFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} /><i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}</label></div><div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first for correct lyrics text. WhisperX provides timing. Claude combines both.</div><button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}><i className="ti ti-sparkles" aria-hidden="true" /> Process now</button>
-        {onAddToQueue && (
-          <button className="btn btn-secondary btn-full" onClick={() => {
-            if (!origFile || !title.trim()) return;
-            onAddToQueue({ file: origFile, title: title.trim(), artist: artist.trim() });
-            setTitle(''); setArtist(''); setOrigFile(null);
-          }} disabled={!origFile || !title.trim()}>
+          <div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first for correct lyrics text.</div>
+          <button className="btn btn-process btn-full" onClick={handleAddToQueue} disabled={!origFile || !title.trim()}>
             <i className="ti ti-stack-push" aria-hidden="true" /> Add to queue
           </button>
-        )}</>)}
-      {mode === 'manual' && (<><div className="card"><span className="card-label">Lyrics</span><button className="btn btn-secondary btn-full" style={{ marginBottom: 12 }} onClick={async () => { if (!title.trim()) return; const res = await lrcSearch(artist, title); if (res?.plain) setLyricsText(res.plain); else alert('Not found on LRClib.'); }}><i className="ti ti-search" aria-hidden="true" /> Search LRClib</button><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder={"Paste lyrics here…\n\nOr LRC format:\n[00:12.34]First line"} rows={7} /></div><div className="card"><span className="card-label">Instrumental track</span><label className={`upload-zone${instrFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setInstrFile(e.target.files[0])} /><i className={`ti ${instrFile ? 'ti-check' : 'ti-music'}`} style={{ color: instrFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{instrFile ? <p className="filename">{instrFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Upload karaoke / instrumental</p><p>MP3, WAV, M4A</p></>}</label></div><button className="btn btn-primary btn-full" onClick={handleSave} disabled={!title.trim()}><i className="ti ti-plus" aria-hidden="true" /> Add to library</button></>)}
+        </>
+      )}
+
+      {mode === 'manual' && (
+        <>
+          <div className="card">
+            <span className="card-label">Lyrics</span>
+            <button className="btn btn-secondary btn-full" style={{ marginBottom: 12 }} onClick={async () => { if (!title.trim()) return; const res = await lrcSearch(artist, title); if (res?.plain) setLyricsText(res.plain); else alert('Not found on LRClib.'); }}><i className="ti ti-search" aria-hidden="true" /> Search LRClib</button>
+            <textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder={"Paste lyrics here…\n\nOr LRC format:\n[00:12.34]First line"} rows={7} />
+          </div>
+          <div className="card">
+            <span className="card-label">Instrumental track</span>
+            <label className={`upload-zone${instrFile ? ' has-file' : ''}`}>
+              <input type="file" accept="audio/*" onChange={e => setInstrFile(e.target.files[0])} />
+              <i className={`ti ${instrFile ? 'ti-check' : 'ti-music'}`} style={{ color: instrFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />
+              {instrFile ? <p className="filename">{instrFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Upload karaoke / instrumental</p><p>MP3, WAV, M4A</p></>}
+            </label>
+          </div>
+          <button className="btn btn-primary btn-full" onClick={handleSave} disabled={!title.trim()}><i className="ti ti-plus" aria-hidden="true" /> Add to library</button>
+        </>
+      )}
     </div>
   );
 }
@@ -1337,7 +1172,11 @@ function SettingsScreen({ settings, onSettingsChange, onRestoreSongs, songs, onA
                   )}
                   {queueRunning && <span style={{ fontSize: 11, color: 'var(--amber)' }}><i className="ti ti-loader spin" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Running…</span>}
                 </div>
-                {queue.map(item => (
+                {queue.filter(item => {
+            if (item.status === 'done' || item.status === 'failed')
+              return (item.completedAt || 0) > Date.now() - 24 * 60 * 60 * 1000;
+            return true;
+          }).map(item => (
                   <div key={item.qid} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', borderBottom: '1px solid var(--border)' }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ fontSize: 13, fontWeight: 700, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: item.status === 'processing' ? 'var(--amber)' : item.status === 'failed' ? 'var(--rose)' : item.status === 'done' ? 'var(--muted)' : 'var(--text)' }}>{item.title}{item.artist ? ` — ${item.artist}` : ''}</p>
@@ -1478,14 +1317,17 @@ export default function App() {
   const [isDesktop, setIsDesktop]   = useState(() => window.innerWidth >= 900);
 
   // ── Processing queue ────────────────────────────────────────────────────
-  const [queue, setQueue]         = useState([]);
+  const [queue, setQueue]         = useState(() => { const p = loadPersistedQueue(); return p; });
   const [queueRunning, setQueueRunning] = useState(false);
-  const queueRef                  = useRef([]);
+  const queueRef                  = useRef(loadPersistedQueue());
   const queueActiveRef            = useRef(false);
 
   function updateQueueItem(qid, patch) {
-    queueRef.current = queueRef.current.map(i => i.qid === qid ? { ...i, ...patch } : i);
+    const isFinished = patch.status === 'done' || patch.status === 'failed';
+    const withTs = isFinished && !patch.completedAt ? { ...patch, completedAt: Date.now() } : patch;
+    queueRef.current = queueRef.current.map(i => i.qid === qid ? { ...i, ...withTs } : i);
     setQueue([...queueRef.current]);
+    if (isFinished) persistQueue(queueRef.current);
   }
   function addToQueue({ file, title, artist }) {
     const item = { qid: uid(), file, title, artist, status: 'waiting', stageMsg: 'Waiting…', error: null };
