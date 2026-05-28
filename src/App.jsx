@@ -921,7 +921,9 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
   useEffect(() => {
     const a = audioRef.current; if (!a) return;
     const onMeta = () => { setDuration(a.duration); };
-    const onEnd  = () => { setPlaying(false); setActiveLine(-1); onSongEnd?.(); };
+    // Use stateRef so onSongEnd always reflects current queue state,
+    // even if songs were added after this song started playing
+    const onEnd  = () => { setPlaying(false); setActiveLine(-1); stateRef.current.onSongEnd?.(); };
     a.addEventListener('loadedmetadata', onMeta);
     a.addEventListener('ended', onEnd);
     return () => {
@@ -934,8 +936,15 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     const main = audioRef.current; const guide = guideRef.current; if (!main) return;
     if (playing) {
       main.volume = settings.masterVolume ?? 1;
-      main.play().catch(err => {
-        if (err.name === 'AbortError') return; // Expected when navigating — not a real error
+      main.play().then(() => {
+        // Immediately pause+resume to force the browser to re-anchor currentTime
+        // from the decoded frame position rather than the estimated byte position.
+        // This is the programmatic equivalent of the manual pause→play fix for VBR MP3s.
+        // Happens within one event-loop tick — inaudible.
+        main.pause();
+        main.play().catch(() => {});
+      }).catch(err => {
+        if (err.name === 'AbortError') return;
         console.error('Playback failed:', err.message);
         if (song.audioUrl?.startsWith('blob:')) console.warn('Expired blob URL — re-add this song');
         setPlaying(false);
@@ -1371,27 +1380,12 @@ function ArchivedSongsPanel({ onRestoreSongs }) {
 
 
 // ── QUEUE SCREEN ──────────────────────────────────────────────────────────────
-function useLongPress(onPress, onLongPress, delay = 500) {
-  const timer = useRef(null);
-  const fired = useRef(false);
-  const start = (e) => {
-    if (e.button !== undefined && e.button !== 0) return;
-    e.preventDefault();
-    fired.current = false;
-    timer.current = setTimeout(() => { fired.current = true; onLongPress(); }, delay);
-  };
-  const end = () => { clearTimeout(timer.current); if (!fired.current) onPress(); fired.current = false; };
-  const cancel = () => { clearTimeout(timer.current); fired.current = false; };
-  return { onMouseDown: start, onMouseUp: end, onMouseLeave: cancel, onTouchStart: start, onTouchEnd: end, onTouchCancel: cancel };
-}
-
-function QueueArrow({ direction, disabled, onPress, onLongPress }) {
-  const handlers = useLongPress(onPress, onLongPress);
+function QueueArrow({ direction, disabled, onPress }) {
   return (
     <button
-      {...(disabled ? {} : handlers)}
+      onClick={disabled ? undefined : onPress}
       disabled={disabled}
-      aria-label={direction === 'up' ? 'Move up (hold for top)' : 'Move down (hold for bottom)'}
+      aria-label={direction === 'up' ? 'Move up' : 'Move down'}
       style={{
         width: 36, height: 36,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1401,7 +1395,6 @@ function QueueArrow({ direction, disabled, onPress, onLongPress }) {
         cursor: disabled ? 'default' : 'pointer',
         opacity: disabled ? 0.2 : 0.7,
         color: 'inherit', flexShrink: 0,
-        userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation',
         transition: 'opacity 0.12s, background 0.12s',
       }}
       onMouseEnter={e => { if (!disabled) { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(255,255,255,0.07)'; } }}
@@ -1412,7 +1405,7 @@ function QueueArrow({ direction, disabled, onPress, onLongPress }) {
   );
 }
 
-function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDown, onMoveToTop, onMoveToBottom, onShuffle, onClear, onGoToLibrary, onCancelCurrent }) {
+function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDown, onShuffle, onClear, onGoToLibrary, onCancelCurrent }) {
   const hasQueue    = queue.length > 0;
   const canPlay     = hasQueue && !currentSong;
 
@@ -1470,8 +1463,8 @@ function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDow
                 </div>
                 {/* Controls — chips with borders, 4px gap */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-                  <QueueArrow direction="up"   disabled={i === 0}                  onPress={() => onMoveUp(i)}   onLongPress={() => onMoveToTop(i)} />
-                  <QueueArrow direction="down" disabled={i === queue.length - 1}   onPress={() => onMoveDown(i)} onLongPress={() => onMoveToBottom(i)} />
+                  <QueueArrow direction="up"   disabled={i === 0}                  onPress={() => onMoveUp(i)} />
+                  <QueueArrow direction="down" disabled={i === queue.length - 1}   onPress={() => onMoveDown(i)} />
                   <button
                     onClick={() => onRemove(i)}
                     aria-label="Remove from queue"
@@ -1631,12 +1624,10 @@ export default function App() {
   function perfQueueClear()   { setPerfQueue([]); }
   /** Start playing the first song in the performance queue */
   function playFromPerfQueue() {
-    setPerfQueue(q => {
-      if (!q.length) return q;
-      const [next, ...rest] = q;
-      navigateToSong(next);
-      return rest;
-    });
+    if (perfQueue.length === 0) return;
+    const next = perfQueue[0];
+    setPerfQueue(q => q.slice(1));
+    navigateToSong(next);
   }
 
   const shouldAutoPlayRef = useRef(false);
@@ -1685,8 +1676,6 @@ export default function App() {
       onRemove={perfQueueRemove}
       onMoveUp={i => perfQueueMove(i, i - 1)}
       onMoveDown={i => perfQueueMove(i, i + 1)}
-      onMoveToTop={i => perfQueueMove(i, 0)}
-      onMoveToBottom={i => perfQueueMove(i, perfQueue.length - 1)}
       onShuffle={perfQueueShuffle}
       onClear={perfQueueClear}
       onGoToLibrary={() => setTab('library')}
