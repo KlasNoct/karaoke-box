@@ -148,6 +148,33 @@ async function restoreDeletedSongs(songs) {
   return restored;
 }
 
+// Cross-references library song URLs against actual storage files.
+// Returns files in instrumentals/ and vocals/ not referenced by any active library song.
+async function findOrphanedFiles() {
+  if (!supabase) return [];
+  try {
+    // Build set of all paths currently used by library songs
+    const libSongs = await loadLibrary();
+    const referenced = new Set();
+    for (const song of libSongs) {
+      const extractPath = url => url?.match(/\/storage\/v1\/object\/public\/songs\/(.+)$/)?.[1];
+      const ap = extractPath(song.audioUrl);  const vp = extractPath(song.vocalsUrl);
+      if (ap) referenced.add(decodeURIComponent(ap));
+      if (vp) referenced.add(decodeURIComponent(vp));
+    }
+    // List all files in instrumentals/ and vocals/, flag any not in the referenced set
+    const orphaned = [];
+    for (const folder of ['instrumentals', 'vocals']) {
+      const { data: files } = await supabase.storage.from('songs').list(folder, { limit: 1000 });
+      for (const file of (files || [])) {
+        const path = `${folder}/${file.name}`;
+        if (!referenced.has(path)) orphaned.push({ path, name: file.name, folder, size: file.metadata?.size });
+      }
+    }
+    return orphaned;
+  } catch (e) { console.warn('findOrphanedFiles:', e.message); return []; }
+}
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 const SETTINGS_KEY = 'karaoke_settings';
 const loadSettings   = () => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } };
@@ -1132,6 +1159,75 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
 }
 
 
+// ── ORPHANED FILES PANEL ─────────────────────────────────────────────────────
+function OrphanedFilesPanel() {
+  const [files, setFiles]     = useState(null); // null = not loaded
+  const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState([]);
+  const [deleting, setDeleting] = useState(false);
+  const [statusMsg, setStatusMsg] = useState('');
+
+  const allSel = files?.length > 0 && selected.length === files.length;
+
+  function toggleSel(path) { setSelected(p => p.includes(path) ? p.filter(x => x !== path) : [...p, path]); }
+  function toggleAll()      { setSelected(allSel ? [] : (files || []).map(f => f.path)); }
+
+  async function handleLoad() {
+    setLoading(true); setStatusMsg('');
+    const found = await findOrphanedFiles();
+    setFiles(found); setSelected([]); setLoading(false);
+  }
+
+  async function handleDelete() {
+    const toDel = (files || []).filter(f => selected.includes(f.path));
+    if (!toDel.length) return;
+    if (!window.confirm(`Permanently delete ${toDel.length} file${toDel.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+    setDeleting(true);
+    await supabase.storage.from('songs').remove(toDel.map(f => f.path));
+    setFiles(p => p.filter(f => !selected.includes(f.path)));
+    setStatusMsg(`✓ Deleted ${toDel.length} file${toDel.length !== 1 ? 's' : ''}`);
+    setSelected([]);
+    setDeleting(false);
+  }
+
+  const fmtSize = b => b == null ? '' : b > 1048576 ? `${(b/1048576).toFixed(1)} MB` : b > 1024 ? `${(b/1024).toFixed(0)} KB` : `${b} B`;
+
+  if (files === null) return (
+    <button className="btn btn-secondary" onClick={handleLoad} disabled={loading}>
+      {loading ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Scanning…</> : <><i className="ti ti-search" aria-hidden="true" /> Scan for orphaned files</>}
+    </button>
+  );
+
+  if (files.length === 0) return (
+    <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0 }}>{statusMsg || '✓ No orphaned files found.'}</p>
+  );
+
+  return (
+    <>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0 8px', cursor: 'pointer', borderBottom: '1px solid var(--border)', marginBottom: 4 }}>
+        <input type="checkbox" checked={allSel} onChange={toggleAll} style={{ width: 15, height: 15, accentColor: 'var(--amber)', flexShrink: 0 }} />
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>Select all ({files.length})</span>
+      </label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 12, maxHeight: 200, overflowY: 'auto' }}>
+        {files.map(f => (
+          <label key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 2px', cursor: 'pointer', borderRadius: 4, background: selected.includes(f.path) ? 'rgba(244,168,39,0.05)' : 'transparent' }}>
+            <input type="checkbox" checked={selected.includes(f.path)} onChange={() => toggleSel(f.path)} style={{ width: 15, height: 15, accentColor: 'var(--amber)', flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: 12, fontWeight: 600, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace', color: 'var(--muted)' }}>{f.name}</p>
+              <p style={{ fontSize: 10, color: 'var(--muted)', margin: 0, opacity: 0.6 }}>{f.folder}{f.size != null ? ` · ${fmtSize(f.size)}` : ''}</p>
+            </div>
+          </label>
+        ))}
+      </div>
+      {statusMsg && <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: '0 0 8px' }}>{statusMsg}</p>}
+      <button className="btn btn-secondary" onClick={handleDelete} disabled={!selected.length || deleting}
+        style={{ fontSize: 12, color: selected.length ? 'var(--rose)' : undefined, borderColor: selected.length ? 'var(--rose)' : undefined }}>
+        <i className="ti ti-trash" aria-hidden="true" /> Delete{selected.length ? ` (${selected.length})` : ''}
+      </button>
+    </>
+  );
+}
+
 // ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
 function SettingsScreen({ settings, onSettingsChange, onRestoreSongs }) {
   const hasSupabase = !!(SUPA_URL && SUPA_KEY);
@@ -1233,7 +1329,7 @@ function SettingsScreen({ settings, onSettingsChange, onRestoreSongs }) {
                 </div>
 
                 {/* Status message */}
-                {statusMsg && <p style={{ fontSize: 12, color: 'var(--muted)', margin: '0 0 8px' }}>{statusMsg}</p>}
+                {statusMsg && <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: '0 0 8px' }}>{statusMsg}</p>}
 
                 {/* Action buttons */}
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -1250,6 +1346,16 @@ function SettingsScreen({ settings, onSettingsChange, onRestoreSongs }) {
                 </div>
               </>
             )}
+          </div>
+        )}
+
+        {hasSupabase && (
+          <div className="card">
+            <span className="card-label">Storage — orphaned files</span>
+            <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px', lineHeight: 1.6 }}>
+              Audio files not referenced by any library song. These are usually from old processing attempts or songs deleted before the archive system existed.
+            </p>
+            <OrphanedFilesPanel />
           </div>
         )}
 
