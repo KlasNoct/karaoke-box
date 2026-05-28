@@ -443,7 +443,7 @@ const EDITOR_COLORS = [
 
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
-function LibraryScreen({ songs, queue = [], onPlay, onEdit, onDelete, onStartRandom }) {
+function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
   const [q, setQ] = useState('');
   const filtered = songs.filter(s => s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase()));
   return (
@@ -458,30 +458,6 @@ function LibraryScreen({ songs, queue = [], onPlay, onEdit, onDelete, onStartRan
           <i className="ti ti-arrows-shuffle" aria-hidden="true" />
         </button>
       </div>
-      {/* Processing queue panel — shown when items exist */}
-      {queue.length > 0 && (
-        <div className="queue-panel">
-          <div className="queue-panel-header">
-            <span className="queue-panel-title"><i className="ti ti-stack-push" aria-hidden="true" /> Queue</span>
-            <span className="queue-panel-count">{queue.filter(i => i.status === 'waiting' || i.status === 'processing').length} pending</span>
-          </div>
-          {queue.map(item => (
-            <div key={item.qid} className={`queue-item queue-item--${item.status}`}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p className="queue-item-title">{item.title}{item.artist ? ` — ${item.artist}` : ''}</p>
-                <p className="queue-item-stage">{item.stageMsg}</p>
-                {item.error && <p className="queue-item-error">{item.error}</p>}
-              </div>
-              <span className="queue-item-icon">
-                {item.status === 'processing' && <i className="ti ti-loader spin" aria-hidden="true" />}
-                {item.status === 'done'       && <i className="ti ti-check"  style={{ color: '#20BF6B' }} aria-hidden="true" />}
-                {item.status === 'failed'     && <i className="ti ti-alert-triangle" style={{ color: 'var(--rose)' }} aria-hidden="true" />}
-                {item.status === 'waiting'    && <i className="ti ti-clock" style={{ color: 'var(--muted)' }} aria-hidden="true" />}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
         {filtered.length === 0 && songs.length > 0 && (<p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>No results for "{q}"</p>)}
@@ -1086,6 +1062,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
   useEffect(() => {
     const main = audioRef.current; const guide = guideRef.current; if (!main) return;
     if (playing) {
+      main.volume = settings.masterVolume ?? 1;
       main.play().catch(err => { console.error('Playback failed:', err.message); if (song.audioUrl?.startsWith('blob:')) console.warn('Expired blob URL — re-add this song'); setPlaying(false); setPlayError(song.audioUrl?.startsWith('blob:') ? 'Audio expired — re-add this song to fix.' : `Could not play. (${err.message})`); });
       if (guide && guideVolume > 0) { guide.currentTime = main.currentTime; guide.play().catch(() => {}); }
       const tick = () => {
@@ -1100,7 +1077,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, onBack
 
   useEffect(() => {
     const guide = guideRef.current; if (!guide) return;
-    guide.volume = guideVolume;
+    guide.volume = (settings.masterVolume ?? 1) * guideVolume;
     if (playing && guideVolume > 0) { guide.currentTime = audioRef.current?.currentTime || 0; guide.play().catch(() => {}); }
     else if (guideVolume === 0) guide.pause();
   }, [guideVolume]);
@@ -1328,50 +1305,124 @@ function OrphanedFilesPanel() {
 }
 
 // ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
-function SettingsScreen({ settings, onSettingsChange, onRestoreSongs }) {
-  const hasSupabase = !!(SUPA_URL && SUPA_KEY);
+function SettingsScreen({ settings, onSettingsChange, onRestoreSongs, songs, onAddSong, queue, queueRunning, onAddToQueue, onRemoveFromQueue, onStartQueue }) {
+  const [settingsTab, setSettingsTab] = useState('songs');
+
+  return (
+    <div className="screen">
+      <div className="page-header"><div><div className="page-title">Settings</div></div></div>
+
+      {/* Internal tab bar */}
+      <div className="settings-tabs-row">
+        <button className={`settings-tab-btn${settingsTab === 'songs' ? ' active' : ''}`} onClick={() => setSettingsTab('songs')}>Songs</button>
+        <button className={`settings-tab-btn${settingsTab === 'app' ? ' active' : ''}`} onClick={() => setSettingsTab('app')}>App</button>
+      </div>
+
+      {/* ── Songs tab ── */}
+      {settingsTab === 'songs' && (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {/* Add Song form */}
+          <AddSongScreen songs={songs} onSave={onAddSong} onAddToQueue={onAddToQueue} />
+
+          {/* Processing queue — shown only in this tab */}
+          {queue.length > 0 && (
+            <div style={{ padding: '0 18px', marginTop: 8 }}>
+              <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span className="card-label" style={{ margin: 0 }}>Queue — {queue.length} song{queue.length !== 1 ? 's' : ''}</span>
+                  {queue.filter(i => i.status === 'waiting').length > 0 && !queueRunning && (
+                    <button className="btn btn-primary" style={{ fontSize: 12, padding: '5px 12px' }} onClick={onStartQueue}>
+                      <i className="ti ti-player-play" aria-hidden="true" /> Process ({queue.filter(i => i.status === 'waiting').length})
+                    </button>
+                  )}
+                  {queueRunning && <span style={{ fontSize: 11, color: 'var(--amber)' }}><i className="ti ti-loader spin" style={{ fontSize: 12, marginRight: 4 }} aria-hidden="true" />Running…</span>}
+                </div>
+                {queue.map(item => (
+                  <div key={item.qid} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ fontSize: 13, fontWeight: 700, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: item.status === 'processing' ? 'var(--amber)' : item.status === 'failed' ? 'var(--rose)' : item.status === 'done' ? 'var(--muted)' : 'var(--text)' }}>{item.title}{item.artist ? ` — ${item.artist}` : ''}</p>
+                      <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{item.stageMsg}{item.error ? ` · ${item.error}` : ''}</p>
+                    </div>
+                    {item.status === 'waiting'
+                      ? <button className="btn btn-ghost" style={{ padding: 5, flexShrink: 0 }} onClick={() => onRemoveFromQueue(item.qid)} aria-label="Remove from queue"><i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" /></button>
+                      : <span style={{ fontSize: 16, flexShrink: 0 }}>
+                          {item.status === 'processing' && <i className="ti ti-loader spin" style={{ color: 'var(--amber)' }} aria-hidden="true" />}
+                          {item.status === 'done'       && <i className="ti ti-check" style={{ color: '#20BF6B' }} aria-hidden="true" />}
+                          {item.status === 'failed'     && <i className="ti ti-alert-triangle" style={{ color: 'var(--rose)' }} aria-hidden="true" />}
+                        </span>
+                    }
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Storage management */}
+          <div style={{ padding: '8px 18px 0', display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {!!(SUPA_URL && SUPA_KEY) && (
+              <>
+                <div className="card">
+                  <span className="card-label">Archived songs</span>
+                  <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px', lineHeight: 1.6 }}>Songs deleted from the library. Audio files are kept until purged.</p>
+                  <ArchivedSongsPanel onRestoreSongs={onRestoreSongs} />
+                </div>
+                <div className="card">
+                  <span className="card-label">Orphaned files</span>
+                  <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px', lineHeight: 1.6 }}>Audio files not referenced by any library song — from old processing attempts.</p>
+                  <OrphanedFilesPanel />
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── App tab ── */}
+      {settingsTab === 'app' && (
+        <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div className="card">
+            <span className="card-label">Master volume</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <i className="ti ti-volume" style={{ fontSize: 18, color: (settings.masterVolume ?? 1) > 0 ? 'var(--amber)' : 'var(--muted)' }} aria-hidden="true" />
+              <input type="range" min="0" max="1" step="0.05" value={settings.masterVolume ?? 1} onChange={e => onSettingsChange({ masterVolume: parseFloat(e.target.value) })} style={{ flex: 1 }} />
+              <span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>{Math.round((settings.masterVolume ?? 1) * 100)}%</span>
+            </div>
+          </div>
+          <div className="card"><span className="card-label">Guide vocals — default level</span><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className="ti ti-microphone" style={{ fontSize: 18, color: settings.defaultGuideVolume > 0 ? 'var(--amber)' : 'var(--muted)' }} aria-hidden="true" /><input type="range" min="0" max="1" step="0.05" value={settings.defaultGuideVolume ?? 0} onChange={e => onSettingsChange({ defaultGuideVolume: parseFloat(e.target.value) })} style={{ flex: 1 }} /><span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>{settings.defaultGuideVolume > 0 ? `${Math.round((settings.defaultGuideVolume ?? 0) * 100)}%` : 'Off'}</span></div></div>
+          <div className="card"><span className="card-label">After a song finishes</span><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>{[{ value: false, label: 'Stop playing', sub: 'Player pauses at the end (default)' }, { value: true, label: 'Play next random song', sub: 'Picks a random song automatically' }].map(opt => (<label key={String(opt.value)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '4px 0' }}><div style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '2px solid', borderColor: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'var(--border)', background: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{(settings.autoPlayRandom ?? false) === opt.value && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />}</div><div><p style={{ fontSize: 14, margin: 0 }}>{opt.label}</p><p style={{ fontSize: 11, color: 'var(--muted)', margin: '1px 0 0' }}>{opt.sub}</p></div><input type="radio" style={{ display: 'none' }} checked={(settings.autoPlayRandom ?? false) === opt.value} onChange={() => onSettingsChange({ autoPlayRandom: opt.value })} /></label>))}</div></div>
+          <div className="card"><span className="card-label">Keyboard shortcuts</span><div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 13 }}>{[['Space','Play / pause'],['Esc','Close player'],['←','Restart (or prev song if within 2s)'],['→','Skip +10s (or next random)'],['M','Toggle guide vocals mute'],['R','Toggle random mode'],['F','Fullscreen']].map(([k,v]) => (<><span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span><span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span></>))}</div></div>
+          <div className="success-box"><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Processing — server-side</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Vocal separation, transcription, and AI lyrics correction run via <code>/api/</code> endpoints. Keys in Vercel env vars.</p></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Archived songs panel (extracted from old SettingsScreen) ──────────────
+function ArchivedSongsPanel({ onRestoreSongs }) {
   const [deletedSongs, setDeletedSongs]     = useState(null);
   const [loadingDeleted, setLoadingDeleted] = useState(false);
   const [selected, setSelected]             = useState([]);
-  const [working, setWorking]               = useState(false); // purge or restore in progress
+  const [working, setWorking]               = useState(false);
   const [statusMsg, setStatusMsg]           = useState('');
-
   const allSelected = deletedSongs?.length > 0 && selected.length === deletedSongs.length;
   const anySelected = selected.length > 0;
-
-  function toggleSelect(id) {
-    setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-  }
-  function toggleAll() {
-    setSelected(allSelected ? [] : (deletedSongs || []).map(s => s.id));
-  }
-
-  async function handleLoadDeleted() {
-    setLoadingDeleted(true); setStatusMsg('');
-    const songs = await loadDeletedSongs();
-    setDeletedSongs(songs); setSelected([]); setLoadingDeleted(false);
-  }
-
+  function toggleSelect(id) { setSelected(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]); }
+  function toggleAll() { setSelected(allSelected ? [] : (deletedSongs || []).map(s => s.id)); }
+  async function handleLoadDeleted() { setLoadingDeleted(true); setStatusMsg(''); const songs = await loadDeletedSongs(); setDeletedSongs(songs); setSelected([]); setLoadingDeleted(false); }
   async function handleRestore() {
     const toRestore = (deletedSongs || []).filter(s => selected.includes(s.id));
     if (!toRestore.length) return;
     setWorking(true); setStatusMsg('');
     const restored = await restoreDeletedSongs(toRestore);
-    if (restored.length) {
-      onRestoreSongs?.(restored);
-      setDeletedSongs(prev => prev.filter(s => !selected.includes(s.id)));
-      setSelected([]);
-      setStatusMsg(`✓ Restored ${restored.length} song${restored.length !== 1 ? 's' : ''}`);
-    }
+    if (restored.length) { onRestoreSongs?.(restored); setDeletedSongs(p => p.filter(s => !selected.includes(s.id))); setSelected([]); setStatusMsg(`✓ Restored ${restored.length} song${restored.length !== 1 ? 's' : ''}`); }
     setWorking(false);
   }
-
   async function handlePurge() {
     const toPurge = (deletedSongs || []).filter(s => selected.includes(s.id));
     if (!toPurge.length) return;
-    if (!window.confirm(`Permanently delete audio files for ${toPurge.length} archived song${toPurge.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+    if (!window.confirm(`Permanently delete audio for ${toPurge.length} archived song${toPurge.length !== 1 ? 's' : ''}? Cannot be undone.`)) return;
     setWorking(true); setStatusMsg('');
-    // Remove audio files + archive entries for selected songs only
     const toRemove = [];
     for (const song of toPurge) {
       const ap = song.audioUrl?.match(/\/storage\/v1\/object\/public\/songs\/(.+)$/)?.[1];
@@ -1381,89 +1432,35 @@ function SettingsScreen({ settings, onSettingsChange, onRestoreSongs }) {
       toRemove.push(song._deletedPath || `deleted/${song.id}.json`);
     }
     if (toRemove.length) await supabase.storage.from('songs').remove(toRemove);
-    setDeletedSongs(prev => prev.filter(s => !selected.includes(s.id)));
-    setSelected([]);
-    setStatusMsg(`✓ Purged ${toPurge.length} song${toPurge.length !== 1 ? 's' : ''}`);
-    setWorking(false);
+    setDeletedSongs(p => p.filter(s => !selected.includes(s.id)));
+    setSelected([]); setStatusMsg(`✓ Purged ${toPurge.length} song${toPurge.length !== 1 ? 's' : ''}`); setWorking(false);
   }
-
+  if (deletedSongs === null) return <button className="btn btn-secondary" onClick={handleLoadDeleted} disabled={loadingDeleted}>{loadingDeleted ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Loading…</> : <><i className="ti ti-archive" aria-hidden="true" /> View archived songs</>}</button>;
+  if (deletedSongs.length === 0) return <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0 }}>{statusMsg || 'No archived songs.'}</p>;
   return (
-    <div className="screen">
-      <div className="page-header"><div><div className="page-title">Settings</div><div className="page-sub">App configuration</div></div></div>
-      <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div className={hasSupabase ? 'success-box' : 'warn-box'}><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className={`ti ${hasSupabase ? 'ti-check' : 'ti-alert-triangle'}`} aria-hidden="true" /> Supabase — {hasSupabase ? 'connected' : 'not configured'}</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>{hasSupabase ? 'Songs and audio saved to cloud.' : 'Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to Vercel env vars.'}</p></div>
-
-        {hasSupabase && (
-          <div className="card">
-            <span className="card-label">Storage — archived songs</span>
-            <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px', lineHeight: 1.6 }}>
-              Deleted songs are archived here. Audio files remain in storage until purged.
-            </p>
-            {deletedSongs === null ? (
-              <button className="btn btn-secondary" onClick={handleLoadDeleted} disabled={loadingDeleted}>
-                {loadingDeleted ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Loading…</> : <><i className="ti ti-archive" aria-hidden="true" /> View archived songs</>}
-              </button>
-            ) : deletedSongs.length === 0 ? (
-              <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>{statusMsg || 'No archived songs.'}</p>
-            ) : (
-              <>
-                {/* Select all row */}
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0 8px', cursor: 'pointer', borderBottom: '1px solid var(--border)', marginBottom: 4 }}>
-                  <input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ width: 15, height: 15, accentColor: 'var(--amber)', flexShrink: 0 }} />
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>Select all ({deletedSongs.length})</span>
-                </label>
-
-                {/* Song list */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 12, maxHeight: 240, overflowY: 'auto' }}>
-                  {deletedSongs.map(s => (
-                    <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 2px', cursor: 'pointer', borderRadius: 4, background: selected.includes(s.id) ? 'rgba(244,168,39,0.05)' : 'transparent' }}>
-                      <input type="checkbox" checked={selected.includes(s.id)} onChange={() => toggleSelect(s.id)} style={{ width: 15, height: 15, accentColor: 'var(--amber)', flexShrink: 0 }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ fontSize: 13, fontWeight: 700, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</p>
-                        <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{s.artist || 'Unknown'}{s._deletedAt ? ` · ${new Date(s._deletedAt).toLocaleDateString()}` : ''}</p>
-                      </div>
-                      <span style={{ fontSize: 10, color: s.audioUrl ? 'var(--muted)' : 'var(--rose)', flexShrink: 0 }}>{s.audioUrl ? '♪' : '○'}</span>
-                    </label>
-                  ))}
-                </div>
-
-                {/* Status message */}
-                {statusMsg && <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: '0 0 8px' }}>{statusMsg}</p>}
-
-                {/* Action buttons */}
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-secondary" onClick={handleRestore} disabled={!anySelected || working}
-                    style={{ flex: 1, fontSize: 12 }}>
-                    {working ? <i className="ti ti-loader spin" style={{ fontSize: 12 }} aria-hidden="true" /> : <i className="ti ti-restore" aria-hidden="true" />}
-                    {' '}Restore{anySelected ? ` (${selected.length})` : ''}
-                  </button>
-                  <button className="btn btn-secondary" onClick={handlePurge} disabled={!anySelected || working}
-                    style={{ flex: 1, fontSize: 12, color: anySelected ? 'var(--rose)' : undefined, borderColor: anySelected ? 'var(--rose)' : undefined }}>
-                    <i className="ti ti-trash" aria-hidden="true" />
-                    {' '}Purge{anySelected ? ` (${selected.length})` : ''}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {hasSupabase && (
-          <div className="card">
-            <span className="card-label">Storage — orphaned files</span>
-            <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px', lineHeight: 1.6 }}>
-              Audio files not referenced by any library song. These are usually from old processing attempts or songs deleted before the archive system existed.
-            </p>
-            <OrphanedFilesPanel />
-          </div>
-        )}
-
-        <div className="card"><span className="card-label">Guide vocals — default level</span><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className="ti ti-microphone" style={{ fontSize: 18, color: settings.defaultGuideVolume > 0 ? 'var(--amber)' : 'var(--muted)' }} aria-hidden="true" /><input type="range" min="0" max="1" step="0.05" value={settings.defaultGuideVolume ?? 0} onChange={e => onSettingsChange({ defaultGuideVolume: parseFloat(e.target.value) })} style={{ flex: 1 }} /><span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>{settings.defaultGuideVolume > 0 ? `${Math.round((settings.defaultGuideVolume ?? 0) * 100)}%` : 'Off'}</span></div></div>
-        <div className="card"><span className="card-label">After a song finishes</span><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>{[{ value: false, label: 'Stop playing', sub: 'Player pauses at the end (default)' }, { value: true, label: 'Play next random song', sub: 'Picks a random song automatically' }].map(opt => (<label key={String(opt.value)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '4px 0' }}><div style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '2px solid', borderColor: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'var(--border)', background: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{(settings.autoPlayRandom ?? false) === opt.value && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />}</div><div><p style={{ fontSize: 14, margin: 0 }}>{opt.label}</p><p style={{ fontSize: 11, color: 'var(--muted)', margin: '1px 0 0' }}>{opt.sub}</p></div><input type="radio" style={{ display: 'none' }} checked={(settings.autoPlayRandom ?? false) === opt.value} onChange={() => onSettingsChange({ autoPlayRandom: opt.value })} /></label>))}</div></div>
-        <div className="card"><span className="card-label">Keyboard shortcuts</span><div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 13 }}>{[['Space','Play / pause'],['Esc','Close player'],['←','Restart (or prev song if within 2s)'],['→','Skip +10s (or next random)'],['M','Toggle guide vocals mute'],['R','Toggle random mode'],['F','Fullscreen']].map(([k,v]) => (<><span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span><span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span></>))}</div></div>
-        <div className="success-box"><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Processing — server-side</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Vocal separation, transcription, and AI lyrics correction run via <code>/api/</code> endpoints. Keys in Vercel env vars.</p></div>
+    <>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0 8px', cursor: 'pointer', borderBottom: '1px solid var(--border)', marginBottom: 4 }}>
+        <input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ width: 15, height: 15, accentColor: 'var(--amber)', flexShrink: 0 }} />
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>Select all ({deletedSongs.length})</span>
+      </label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 12, maxHeight: 240, overflowY: 'auto' }}>
+        {deletedSongs.map(s => (
+          <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 2px', cursor: 'pointer', borderRadius: 4, background: selected.includes(s.id) ? 'rgba(244,168,39,0.05)' : 'transparent' }}>
+            <input type="checkbox" checked={selected.includes(s.id)} onChange={() => toggleSelect(s.id)} style={{ width: 15, height: 15, accentColor: 'var(--amber)', flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: 13, fontWeight: 700, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</p>
+              <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{s.artist || 'Unknown'}{s._deletedAt ? ` · ${new Date(s._deletedAt).toLocaleDateString()}` : ''}</p>
+            </div>
+            <span style={{ fontSize: 10, color: s.audioUrl ? 'var(--muted)' : 'var(--rose)', flexShrink: 0 }}>{s.audioUrl ? '♪' : '○'}</span>
+          </label>
+        ))}
       </div>
-    </div>
+      {statusMsg && <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: '0 0 8px' }}>{statusMsg}</p>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn btn-secondary" onClick={handleRestore} disabled={!anySelected || working} style={{ flex: 1, fontSize: 12 }}><i className="ti ti-restore" aria-hidden="true" /> Restore{anySelected ? ` (${selected.length})` : ''}</button>
+        <button className="btn btn-secondary" onClick={handlePurge} disabled={!anySelected || working} style={{ flex: 1, fontSize: 12, color: anySelected ? 'var(--rose)' : undefined, borderColor: anySelected ? 'var(--rose)' : undefined }}><i className="ti ti-trash" aria-hidden="true" /> Purge{anySelected ? ` (${selected.length})` : ''}</button>
+      </div>
+    </>
   );
 }
 
@@ -1477,11 +1474,12 @@ export default function App() {
   const [loading, setLoading]       = useState(true);
   const [randomMode, setRandomMode] = useState(false);
   const [nextUpSong, setNextUpSong] = useState(null);
-  const [settings, setSettings]     = useState(() => ({ defaultGuideVolume: 0, autoPlayRandom: false, ...loadSettings() }));
+  const [settings, setSettings]     = useState(() => ({ defaultGuideVolume: 0, autoPlayRandom: false, masterVolume: 1, ...loadSettings() }));
   const [isDesktop, setIsDesktop]   = useState(() => window.innerWidth >= 900);
 
   // ── Processing queue ────────────────────────────────────────────────────
   const [queue, setQueue]         = useState([]);
+  const [queueRunning, setQueueRunning] = useState(false);
   const queueRef                  = useRef([]);
   const queueActiveRef            = useRef(false);
 
@@ -1489,16 +1487,23 @@ export default function App() {
     queueRef.current = queueRef.current.map(i => i.qid === qid ? { ...i, ...patch } : i);
     setQueue([...queueRef.current]);
   }
-
   function addToQueue({ file, title, artist }) {
     const item = { qid: uid(), file, title, artist, status: 'waiting', stageMsg: 'Waiting…', error: null };
     queueRef.current = [...queueRef.current, item];
     setQueue([...queueRef.current]);
-    if (!queueActiveRef.current) runQueueLoop();
+    // Does NOT auto-start — user clicks "Process" explicitly
   }
-
+  function removeFromQueue(qid) {
+    queueRef.current = queueRef.current.filter(i => i.qid !== qid);
+    setQueue([...queueRef.current]);
+  }
+  function startQueue() {
+    if (queueActiveRef.current || !queueRef.current.some(i => i.status === 'waiting')) return;
+    runQueueLoop();
+  }
   async function runQueueLoop() {
     queueActiveRef.current = true;
+    setQueueRunning(true);
     while (true) {
       const next = queueRef.current.find(i => i.status === 'waiting');
       if (!next) break;
@@ -1506,7 +1511,7 @@ export default function App() {
       try {
         const result = await processSong(
           { file: next.file, title: next.title, artist: next.artist },
-          (step) => {
+          step => {
             const labels = { upload: 'Uploading…', demucs: 'Separating vocals…', whisper: 'Transcribing…', claude: 'Correcting lyrics…' };
             updateQueueItem(next.qid, { stageMsg: labels[step] || 'Processing…' });
           }
@@ -1521,14 +1526,15 @@ export default function App() {
           if (stored) setSongs(prev => prev.map(x => x.id === song.id ? stored : x));
           updateQueueItem(next.qid, { status: 'done', stageMsg: '✓ Added to library' });
         } else {
-          updateQueueItem(next.qid, { status: 'failed', stageMsg: 'Cancelled', error: 'Cancelled' });
+          updateQueueItem(next.qid, { status: 'failed', stageMsg: 'Cancelled' });
         }
       } catch (e) {
         updateQueueItem(next.qid, { status: 'failed', stageMsg: 'Failed', error: e.message });
       }
-      await sleep(400);
+      await sleep(300);
     }
     queueActiveRef.current = false;
+    setQueueRunning(false);
   }
 
   const shouldAutoPlayRef = useRef(false);
@@ -1542,8 +1548,8 @@ export default function App() {
   }, []);
   useEffect(() => { if (randomMode && activeSong && songs.length > 1) setNextUpSong(pickRandomSong(songs, activeSong.id)); else if (!randomMode) setNextUpSong(null); }, [randomMode, activeSong?.id, songs.length]);
 
-  function navigateToSong(song) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = true; setActiveSong(song); }
-  function handlePlaySong(song) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = false; if (randomMode) stopRandomMode(); setActiveSong(song); }
+  function navigateToSong(s) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = true; setActiveSong(s); }
+  function handlePlaySong(s) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = false; if (randomMode) stopRandomMode(); setActiveSong(s); }
   function navigateToPrevious() { const prev = songHistoryRef.current[songHistoryRef.current.length - 1]; if (!prev) return; songHistoryRef.current = songHistoryRef.current.slice(0, -1); shouldAutoPlayRef.current = true; setActiveSong(prev); }
   function handleSongEnd() { if (randomMode) { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } if (settings.autoPlayRandom && songs.length > 1) { const next = pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } shouldAutoPlayRef.current = false; }
   function startRandomMode() { const first = pickRandomSong(songs, activeSong?.id); if (!first) return; setRandomMode(true); navigateToSong(first); }
@@ -1561,24 +1567,24 @@ export default function App() {
     </div>
   );
 
-  const playerProps = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
+  const settingsProps = { settings, onSettingsChange: handleSettingsChange, onRestoreSongs: handleRestoreSongs, songs, onAddSong: handleAddSong, queue, queueRunning, onAddToQueue: addToQueue, onRemoveFromQueue: removeFromQueue, onStartQueue: startQueue };
+  const playerProps   = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
 
-  const sidebarContent = loading
-    ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading…</div>
-    : <>
-        {tab === 'library'  && <LibraryScreen songs={songs} queue={queue} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} onStartRandom={startRandomMode} />}
-        {tab === 'add'      && <AddSongScreen songs={songs} onSave={handleAddSong} onAddToQueue={addToQueue} />}
-        {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} onRestoreSongs={handleRestoreSongs} />}
-      </>;
+  const libraryView  = <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} onStartRandom={startRandomMode} />;
+  const settingsView = <SettingsScreen {...settingsProps} />;
 
-  // ── Desktop two-column layout ────────────────────────────────────────────
+  // Desktop two-column layout
   if (isDesktop) return (
     <div className="app-desktop">
       <aside className="app-sidebar">
-        {sidebarContent}
+        {loading
+          ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading…</div>
+          : <>
+              {tab === 'library'  ? libraryView : settingsView}
+            </>
+        }
         <nav className="desktop-nav">
           <button className={`desktop-nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /><span>Library</span></button>
-          <button className="desktop-nav-fab" onClick={() => setTab('add')} aria-label="Add song"><i className="ti ti-plus" aria-hidden="true" /></button>
           <button className={`desktop-nav-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}><i className="ti ti-settings" aria-hidden="true" /><span>Settings</span></button>
         </nav>
       </aside>
@@ -1591,23 +1597,25 @@ export default function App() {
     </div>
   );
 
-  // ── Mobile layout ────────────────────────────────────────────────────────
+  // Mobile layout
   if (activeSong) return (
     <div className="app-shell app-shell--player">
       <PlayerScreen key={activeSong.id} {...playerProps} />
     </div>
   );
-
   return (
     <div className="app-shell">
-      {sidebarContent}
-      {!loading && (
-        <nav className="bottom-nav">
-          <button className={`nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /> Library</button>
-          <button className="fab" onClick={() => setTab('add')} aria-label="Add song"><i className="ti ti-plus" aria-hidden="true" /></button>
-          <button className={`nav-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}><i className="ti ti-settings" aria-hidden="true" /> Settings</button>
-        </nav>
-      )}
+      {loading
+        ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading…</div>
+        : <>
+            {tab === 'library'  && libraryView}
+            {tab === 'settings' && settingsView}
+            <nav className="bottom-nav">
+              <button className={`nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /> Library</button>
+              <button className={`nav-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}><i className="ti ti-settings" aria-hidden="true" /> Settings</button>
+            </nav>
+          </>
+      }
     </div>
   );
 }
