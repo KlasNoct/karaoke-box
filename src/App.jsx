@@ -192,6 +192,11 @@ function persistQueue(queue) {
   } catch {}
 }
 
+// ── Performance Queue persistence ────────────────────────────────────────────
+const PERF_QUEUE_KEY = 'karaklas_perf_queue_v1';
+function loadPerfQueue()  { try { return JSON.parse(localStorage.getItem(PERF_QUEUE_KEY) || '[]'); } catch { return []; } }
+function savePerfQueue(q) { try { localStorage.setItem(PERF_QUEUE_KEY, JSON.stringify(q)); } catch {} }
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 const SETTINGS_KEY = 'karaoke_settings';
 const loadSettings   = () => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; } };
@@ -460,7 +465,7 @@ const EDITOR_COLORS = [
 
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
-function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
+function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onDelete, onStartRandom }) {
   const [q, setQ] = useState('');
   const filtered = songs.filter(s => s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase()));
   return (
@@ -483,7 +488,7 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
           const hasWords = activeLyrics?.some(l => l.words?.length > 0);
           const noAudio  = !song.hasAudio && !song.audioUrl;
           return (
-            <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onPlay(song)}>
+            <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onAddToQueueFront(song)}>
               <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
                 <div className="song-title">{song.title}</div>
                 <div className="song-artist">{song.artist || 'Unknown artist'}</div>
@@ -493,6 +498,16 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
                 {hasWords && <span className="badge badge-teal badge-xs">⚡ Words</span>}
                 {song.tuned && <span className="badge badge-purple badge-xs">✓ Tuned</span>}
               </div>
+              {/* + button — appends to end of queue */}
+              <button
+                className="btn btn-ghost"
+                style={{ padding: 7, minWidth: 36, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                onClick={e => { e.stopPropagation(); onAddToQueueEnd(song); }}
+                aria-label="Add to end of queue"
+                title="Add to end of queue"
+              >
+                <i className="ti ti-playlist-add" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" />
+              </button>
               <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
               <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${song.title}"?`)) onDelete(song); }} aria-label="Delete"><i className="ti ti-trash" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
             </div>
@@ -1304,6 +1319,122 @@ function ArchivedSongsPanel({ onRestoreSongs }) {
 }
 
 
+// ── QUEUE SCREEN ──────────────────────────────────────────────────────────────
+function useLongPress(onPress, onLongPress, delay = 500) {
+  const timer   = useRef(null);
+  const fired   = useRef(false);
+  const start = (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    fired.current = false;
+    timer.current = setTimeout(() => { fired.current = true; onLongPress(); }, delay);
+  };
+  const end = () => { clearTimeout(timer.current); if (!fired.current) onPress(); };
+  const cancel = () => clearTimeout(timer.current);
+  return { onMouseDown: start, onMouseUp: end, onMouseLeave: cancel, onTouchStart: start, onTouchEnd: end, onTouchCancel: cancel };
+}
+
+function QueueArrow({ direction, disabled, onPress, onLongPress }) {
+  const handlers = useLongPress(onPress, onLongPress);
+  return (
+    <button
+      {...(disabled ? {} : handlers)}
+      disabled={disabled}
+      aria-label={direction === 'up' ? 'Move up (hold for top)' : 'Move down (hold for bottom)'}
+      style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', borderRadius: 8, cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.2 : 0.6, fontSize: 15, color: 'inherit', flexShrink: 0, userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation' }}
+    >
+      {direction === 'up' ? '↑' : '↓'}
+    </button>
+  );
+}
+
+function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDown, onMoveToTop, onMoveToBottom, onShuffle, onClear, onGoToLibrary }) {
+  const hasQueue    = queue.length > 0;
+  const canPlay     = hasQueue && !currentSong;
+
+  return (
+    <div className="screen" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+      {/* Header */}
+      <div className="page-header" style={{ flexShrink: 0 }}>
+        <div>
+          <div className="page-title">Queue</div>
+          <div className="page-sub">
+            {hasQueue ? `${queue.length} song${queue.length !== 1 ? 's' : ''} up next` : 'No songs queued'}
+          </div>
+        </div>
+      </div>
+
+      {/* Now Playing */}
+      {currentSong && (
+        <div style={{ padding: '10px 18px 12px', background: 'rgba(244,168,39,0.06)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700, color: 'var(--amber)', marginBottom: 3 }}>♪ Now Playing</div>
+          <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentSong.title}</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentSong.artist || 'Unknown artist'}</div>
+        </div>
+      )}
+
+      {/* Queue list */}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {hasQueue ? (
+          <div style={{ padding: '8px 0' }}>
+            {queue.map((song, i) => (
+              <div
+                key={`${song.id}-${i}`}
+                style={{ display: 'flex', alignItems: 'center', padding: '4px 8px 4px 18px', minHeight: 60, borderBottom: '1px solid var(--border)' }}
+              >
+                {/* Index */}
+                <span style={{ fontSize: 12, color: 'var(--muted)', width: 20, flexShrink: 0, textAlign: 'right', marginRight: 12, fontVariantNumeric: 'tabular-nums' }}>
+                  {i + 1}
+                </span>
+                {/* Song info */}
+                <div style={{ flex: 1, minWidth: 0, marginRight: 4 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.title}</div>
+                  <div style={{ fontSize: 13, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.artist || 'Unknown artist'}</div>
+                </div>
+                {/* Controls */}
+                <QueueArrow direction="up"   disabled={i === 0}                  onPress={() => onMoveUp(i)}   onLongPress={() => onMoveToTop(i)} />
+                <QueueArrow direction="down" disabled={i === queue.length - 1}   onPress={() => onMoveDown(i)} onLongPress={() => onMoveToBottom(i)} />
+                <button
+                  onClick={() => onRemove(i)}
+                  aria-label="Remove from queue"
+                  style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 20, color: 'var(--muted)', flexShrink: 0 }}
+                >×</button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          /* Empty state */
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 280, padding: '40px 32px', textAlign: 'center', gap: 12 }}>
+            <div style={{ fontSize: 44 }}>🎤</div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>Queue is empty</div>
+            <div style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 220, lineHeight: 1.5 }}>Tap any song in the Library to add it here</div>
+            <button className="btn btn-primary" style={{ marginTop: 8 }} onClick={onGoToLibrary}>Go to Library →</button>
+          </div>
+        )}
+      </div>
+
+      {/* Footer actions */}
+      {hasQueue && (
+        <div style={{ padding: '12px 18px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexShrink: 0 }}>
+          {canPlay && (
+            <button className="btn btn-primary" style={{ flex: 1, gap: 6 }} onClick={onPlay}>
+              <i className="ti ti-player-play" aria-hidden="true" /> Play
+            </button>
+          )}
+          <button className="btn btn-secondary" style={{ flex: canPlay ? '0 0 auto' : 1 }} onClick={onShuffle} title="Shuffle queue">
+            <i className="ti ti-arrows-shuffle" aria-hidden="true" /> Shuffle
+          </button>
+          <button className="btn btn-secondary" style={{ flex: '0 0 auto', color: 'var(--muted)' }} onClick={onClear} title="Clear queue">
+            Clear
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab]               = useState('library');
@@ -1321,6 +1452,9 @@ export default function App() {
   const [queueRunning, setQueueRunning] = useState(false);
   const queueRef                  = useRef(loadPersistedQueue());
   const queueActiveRef            = useRef(false);
+
+  // ── Performance queue ────────────────────────────────────────────────────
+  const [perfQueue, setPerfQueue] = useState(() => loadPerfQueue());
 
   function updateQueueItem(qid, patch) {
     const isFinished = patch.status === 'done' || patch.status === 'failed';
@@ -1379,6 +1513,42 @@ export default function App() {
     setQueueRunning(false);
   }
 
+  // ── Performance queue functions ──────────────────────────────────────────
+  // Persist whenever perfQueue changes
+  useEffect(() => { savePerfQueue(perfQueue); }, [perfQueue]);
+
+  function perfQueueAddFront(song) { setPerfQueue(q => { const next = [song, ...q]; return next; }); }
+  function perfQueueAddEnd(song)   { setPerfQueue(q => [...q, song]); }
+  function perfQueueRemove(i)      { setPerfQueue(q => q.filter((_, idx) => idx !== i)); }
+  function perfQueueMove(from, to) {
+    setPerfQueue(q => {
+      const next = [...q];
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return next;
+    });
+  }
+  function perfQueueShuffle() {
+    setPerfQueue(q => {
+      const next = [...q];
+      for (let i = next.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [next[i], next[j]] = [next[j], next[i]];
+      }
+      return next;
+    });
+  }
+  function perfQueueClear()   { setPerfQueue([]); }
+  /** Start playing the first song in the performance queue */
+  function playFromPerfQueue() {
+    setPerfQueue(q => {
+      if (!q.length) return q;
+      const [next, ...rest] = q;
+      navigateToSong(next);
+      return rest;
+    });
+  }
+
   const shouldAutoPlayRef = useRef(false);
   const songHistoryRef    = useRef([]);
 
@@ -1393,7 +1563,10 @@ export default function App() {
   function navigateToSong(s) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = true; setActiveSong(s); }
   function handlePlaySong(s) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = false; if (randomMode) stopRandomMode(); setActiveSong(s); }
   function navigateToPrevious() { const prev = songHistoryRef.current[songHistoryRef.current.length - 1]; if (!prev) return; songHistoryRef.current = songHistoryRef.current.slice(0, -1); shouldAutoPlayRef.current = true; setActiveSong(prev); }
-  function handleSongEnd() { if (randomMode) { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } if (settings.autoPlayRandom && songs.length > 1) { const next = pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } shouldAutoPlayRef.current = false; }
+  function handleSongEnd() {
+    // Performance queue takes priority — auto-advance to next queued song
+    if (perfQueue.length > 0) { playFromPerfQueue(); return; }
+    if (randomMode) { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } if (settings.autoPlayRandom && songs.length > 1) { const next = pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } shouldAutoPlayRef.current = false; }
   function startRandomMode() { const first = pickRandomSong(songs, activeSong?.id); if (!first) return; setRandomMode(true); navigateToSong(first); }
   function stopRandomMode()  { setRandomMode(false); setNextUpSong(null); }
   function skipToNextRandom() { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) navigateToSong(next); }
@@ -1412,8 +1585,23 @@ export default function App() {
   const settingsProps = { settings, onSettingsChange: handleSettingsChange, onRestoreSongs: handleRestoreSongs, songs, onAddSong: handleAddSong, queue, queueRunning, onAddToQueue: addToQueue, onRemoveFromQueue: removeFromQueue, onStartQueue: startQueue };
   const playerProps   = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
 
-  const libraryView  = <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} onStartRandom={startRandomMode} />;
+  const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={setEditingSong} onDelete={handleDeleteSong} onStartRandom={startRandomMode} />;
   const settingsView = <SettingsScreen {...settingsProps} />;
+  const queueView    = (
+    <QueueScreen
+      queue={perfQueue}
+      currentSong={activeSong}
+      onPlay={playFromPerfQueue}
+      onRemove={perfQueueRemove}
+      onMoveUp={i => perfQueueMove(i, i - 1)}
+      onMoveDown={i => perfQueueMove(i, i + 1)}
+      onMoveToTop={i => perfQueueMove(i, 0)}
+      onMoveToBottom={i => perfQueueMove(i, perfQueue.length - 1)}
+      onShuffle={perfQueueShuffle}
+      onClear={perfQueueClear}
+      onGoToLibrary={() => setTab('library')}
+    />
+  );
 
   // Desktop two-column layout
   if (isDesktop) return (
@@ -1422,11 +1610,22 @@ export default function App() {
         {loading
           ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading…</div>
           : <>
-              {tab === 'library'  ? libraryView : settingsView}
+              {tab === 'library'  ? libraryView  : null}
+              {tab === 'queue'    ? queueView    : null}
+              {tab === 'settings' ? settingsView : null}
             </>
         }
         <nav className="desktop-nav">
           <button className={`desktop-nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /><span>Library</span></button>
+          <button className={`desktop-nav-btn${tab === 'queue' ? ' active' : ''}`} onClick={() => setTab('queue')} style={{ position: 'relative' }}>
+            <i className="ti ti-list" aria-hidden="true" />
+            <span>Queue</span>
+            {perfQueue.length > 0 && (
+              <span style={{ position: 'absolute', top: 6, right: 6, background: 'var(--amber)', color: '#000', fontSize: 9, fontWeight: 800, lineHeight: 1, padding: '2px 4px', borderRadius: 8, minWidth: 14, textAlign: 'center' }}>
+                {perfQueue.length > 99 ? '99+' : perfQueue.length}
+              </span>
+            )}
+          </button>
           <button className={`desktop-nav-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}><i className="ti ti-settings" aria-hidden="true" /><span>Settings</span></button>
         </nav>
       </aside>
@@ -1451,9 +1650,18 @@ export default function App() {
         ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading…</div>
         : <>
             {tab === 'library'  && libraryView}
+            {tab === 'queue'    && queueView}
             {tab === 'settings' && settingsView}
             <nav className="bottom-nav">
               <button className={`nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /> Library</button>
+              <button className={`nav-btn${tab === 'queue' ? ' active' : ''}`} onClick={() => setTab('queue')} style={{ position: 'relative' }}>
+                <i className="ti ti-list" aria-hidden="true" /> Queue
+                {perfQueue.length > 0 && (
+                  <span style={{ position: 'absolute', top: 8, left: '50%', transform: 'translateX(16px)', background: 'var(--amber)', color: '#000', fontSize: 9, fontWeight: 800, lineHeight: 1, padding: '2px 4px', borderRadius: 8, minWidth: 14, textAlign: 'center' }}>
+                    {perfQueue.length > 99 ? '99+' : perfQueue.length}
+                  </span>
+                )}
+              </button>
               <button className={`nav-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}><i className="ti ti-settings" aria-hidden="true" /> Settings</button>
             </nav>
           </>
