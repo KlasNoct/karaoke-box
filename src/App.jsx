@@ -910,7 +910,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
   const [isCinematic, setIsCinematic] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
   useEffect(() => { const check = () => setIsCinematic(window.innerWidth >= 768); window.addEventListener('resize', check); return () => window.removeEventListener('resize', check); }, []);
 
-  stateRef.current = { playing, currentTime, duration, randomMode, guideVolume };
+  stateRef.current = { playing, currentTime, duration, randomMode, guideVolume, hasNext, onSongEnd };
 
   useEffect(() => {
     setPlaying(false); setCurrentTime(0); setDuration(0); setActiveLine(-1);
@@ -920,24 +920,12 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
 
   useEffect(() => {
     const a = audioRef.current; if (!a) return;
-    let resynced = false;
     const onMeta = () => { setDuration(a.duration); };
     const onEnd  = () => { setPlaying(false); setActiveLine(-1); onSongEnd?.(); };
-    // canplaythrough fires once enough data is buffered — ideal time to force VBR resync
-    // by seeking to the end (forces browser to read the full seek table) then back to 0
-    const onCanPlay = () => {
-      if (resynced || !isFinite(a.duration) || a.duration <= 0) return;
-      resynced = true;
-      const dur = a.duration;
-      a.currentTime = dur - 0.01; // seek near end → browser reads full VBR TOC
-      requestAnimationFrame(() => { a.currentTime = 0; }); // snap back to start
-    };
     a.addEventListener('loadedmetadata', onMeta);
-    a.addEventListener('canplaythrough', onCanPlay);
     a.addEventListener('ended', onEnd);
     return () => {
       a.removeEventListener('loadedmetadata', onMeta);
-      a.removeEventListener('canplaythrough', onCanPlay);
       a.removeEventListener('ended', onEnd);
     };
   }, [song.id]);
@@ -974,11 +962,11 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
   useEffect(() => {
     function onKey(e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-      const { playing, currentTime, duration, randomMode, guideVolume } = stateRef.current;
+      const { playing, currentTime, duration, randomMode, guideVolume, hasNext: refHasNext, onSongEnd: refOnSongEnd } = stateRef.current;
       switch (e.key) {
         case ' ': e.preventDefault(); setPlaying(p => !p); break;
         case 'Escape': e.preventDefault(); onBack?.(); break;
-        case 'ArrowRight': e.preventDefault(); if (hasNext) { onSongEnd?.(); } else if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); } break;
+        case 'ArrowRight': e.preventDefault(); if (refHasNext) { refOnSongEnd?.(); } else if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); } break;
         case 'ArrowLeft': e.preventDefault(); if (currentTime <= 2) { onGoToPrevious?.(); } else { if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); } if (guideRef.current) guideRef.current.currentTime = 0; } break;
         case 'm': case 'M': setGuideVolume(v => v > 0 ? 0 : 0.3); break;
         case 'r': case 'R': if (randomMode) onStopRandom?.(); else onStartRandom?.(); break;
@@ -1119,7 +1107,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       <div className="player-header">
         <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
         <div className="song-avatar" style={{ background: c.bg, color: c.fg, width: 44, height: 44, fontSize: 18 }}>{song.title[0]?.toUpperCase()}</div>
-        <div className="player-meta"><div className="player-title">{song.title}</div><div className="player-artist">{song.artist || 'Unknown artist'}</div></div>
+        <div className="player-meta" style={{ flex: 1, minWidth: 0 }}><div className="player-title">{song.title}</div><div className="player-artist">{song.artist || 'Unknown artist'}</div></div>
         {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
         {hasWords && (
           <div className="lyric-mode-toggle">
@@ -1384,31 +1372,15 @@ function ArchivedSongsPanel({ onRestoreSongs }) {
 
 // ── QUEUE SCREEN ──────────────────────────────────────────────────────────────
 function useLongPress(onPress, onLongPress, delay = 500) {
-  const timer   = useRef(null);
-  const fired   = useRef(false);
+  const timer = useRef(null);
+  const fired = useRef(false);
   const start = (e) => {
     if (e.button !== undefined && e.button !== 0) return;
     e.preventDefault();
     fired.current = false;
-    timer.current = setTimeout(() => {
-      fired.current = true;
-      onLongPress();
-      // Suppress the synthetic click the browser fires after touchEnd —
-      // intercept in capture phase so it never reaches any element
-      const suppress = (ev) => {
-        ev.stopPropagation();
-        ev.preventDefault();
-        document.removeEventListener('click', suppress, true);
-      };
-      document.addEventListener('click', suppress, true);
-      setTimeout(() => document.removeEventListener('click', suppress, true), 600);
-    }, delay);
+    timer.current = setTimeout(() => { fired.current = true; onLongPress(); }, delay);
   };
-  const end = (e) => {
-    clearTimeout(timer.current);
-    if (fired.current) { fired.current = false; return; }
-    onPress();
-  };
+  const end = () => { clearTimeout(timer.current); if (!fired.current) onPress(); fired.current = false; };
   const cancel = () => { clearTimeout(timer.current); fired.current = false; };
   return { onMouseDown: start, onMouseUp: end, onMouseLeave: cancel, onTouchStart: start, onTouchEnd: end, onTouchCancel: cancel };
 }
@@ -1440,7 +1412,7 @@ function QueueArrow({ direction, disabled, onPress, onLongPress }) {
   );
 }
 
-function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDown, onMoveToTop, onMoveToBottom, onShuffle, onClear, onGoToLibrary }) {
+function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDown, onMoveToTop, onMoveToBottom, onShuffle, onClear, onGoToLibrary, onCancelCurrent }) {
   const hasQueue    = queue.length > 0;
   const canPlay     = hasQueue && !currentSong;
 
@@ -1459,10 +1431,22 @@ function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDow
 
       {/* Now Playing */}
       {currentSong && (
-        <div style={{ padding: '10px 18px 12px', background: 'rgba(244,168,39,0.06)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700, color: 'var(--amber)', marginBottom: 3 }}>♪ Now Playing</div>
-          <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentSong.title}</div>
-          <div style={{ fontSize: 13, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentSong.artist || 'Unknown artist'}</div>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '10px 8px 12px 18px', background: 'rgba(244,168,39,0.06)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700, color: 'var(--amber)', marginBottom: 3 }}>♪ Now Playing</div>
+            <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentSong.title}</div>
+            <div style={{ fontSize: 13, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{currentSong.artist || 'Unknown artist'}</div>
+          </div>
+          {onCancelCurrent && (
+            <button
+              onClick={onCancelCurrent}
+              aria-label="Cancel current song"
+              title="Cancel song"
+              style={{ width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, cursor: 'pointer', opacity: 0.6, color: 'inherit', flexShrink: 0 }}
+            >
+              <i className="ti ti-x" style={{ fontSize: 14 }} aria-hidden="true" />
+            </button>
+          )}
         </div>
       )}
 
@@ -1706,6 +1690,7 @@ export default function App() {
       onShuffle={perfQueueShuffle}
       onClear={perfQueueClear}
       onGoToLibrary={() => setTab('library')}
+      onCancelCurrent={() => { if (perfQueue.length > 0 || randomMode) { handleSongEnd(); } else { stopRandomMode(); setActiveSong(null); } }}
     />
   );
 
