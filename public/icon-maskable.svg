@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#07080F"/>
+  <!-- Safe zone (80%) centred — mic slightly scaled down -->
+  <rect x="206" y="100" width="100" height="178" rx="50" fill="#F4A827"/>
+  <path d="M 162 288 A 94 94 0 0 0 350 288" fill="none" stroke="#F4A827" stroke-width="22" stroke-linecap="round"/>
+  <line x1="256" y1="382" x2="256" y2="424" stroke="#F4A827" stroke-width="22" stroke-linecap="round"/>
+  <line x1="198" y1="424" x2="314" y2="424" stroke="#F4A827" stroke-width="22" stroke-linecap="round"/>
+</svg>
