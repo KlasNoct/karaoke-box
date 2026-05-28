@@ -256,6 +256,72 @@ async function callClaudeCorrection(whisperOut, lrcLines) {
   }
 }
 
+// ── Core song processing pipeline ────────────────────────────────────────────
+// Used by both immediate processing (AddSongScreen) and the batch queue (App root).
+// onStage(step, status, elapsed) is called with progress updates.
+// cancelRef.aborted = true stops polling mid-flight.
+async function processSong({ file, title, artist }, onStage, cancelRef = { aborted: false }) {
+  const lrcResult = title.trim() ? await lrcSearch(artist, title) : null;
+  const hadLrc = !!(lrcResult?.synced?.length > 0);
+  const whisperPrompt = lrcResult?.plain || null;
+
+  onStage('upload', 'running', 0);
+  const originalUrl = await uploadAudioToSupabase(file, title, artist);
+  if (cancelRef.aborted) return null;
+
+  // Demucs
+  onStage('demucs', 'running', 0);
+  const demucsId = await repCreate(DEMUCS_VERSION, {
+    audio: originalUrl, model_name: 'htdemucs', stem: 'vocals', shifts: 1, overlap: 0.25, output_format: 'mp3',
+  });
+  let instrumentalUrl = null, vocalsUrl = null;
+  let demucsErr = null;
+  try {
+    const demucsOut = await repPoll(demucsId, (st, el) => { if (!cancelRef.aborted) onStage('demucs', st, el); }, cancelRef);
+    onStage('demucs', 'done', 0);
+    const ir = getInstrumental(demucsOut), vr = getVocals(demucsOut);
+    if (ir) instrumentalUrl = await uploadProcessedToSupabase(ir, 'instrumentals', title, artist);
+    if (vr) vocalsUrl       = await uploadProcessedToSupabase(vr, 'vocals', title, artist);
+    if (originalUrl) await deleteSupabaseFile(originalUrl);
+  } catch (e) { demucsErr = e.message; onStage('demucs', 'error', 0); }
+
+  if (cancelRef.aborted) return null;
+
+  // WhisperX on vocal stem
+  const whisperSrc = vocalsUrl || originalUrl;
+  onStage('whisper', 'running', 0);
+  let whisperOut = null, whisperErr = null, lyricsAlt = [];
+  try {
+    const wpId = await repCreate(WHISPERX_VERSION, {
+      audio_file: whisperSrc, align_output: true, temperature: 0,
+      ...(whisperPrompt ? { initial_prompt: whisperPrompt } : {}),
+    });
+    whisperOut = await repPoll(wpId, (st, el) => { if (!cancelRef.aborted) onStage('whisper', st, el); }, cancelRef);
+    onStage('whisper', 'done', 0);
+    lyricsAlt = whisperToLines(whisperOut);
+  } catch (e) { whisperErr = e.message; onStage('whisper', 'error', 0); }
+
+  if (cancelRef.aborted) return null;
+
+  // Claude correction
+  let lyrics = lyricsAlt, lyricsType = lyricsAlt.length > 0 ? 'synced' : 'none', claudeApplied = false;
+  if (whisperOut && hadLrc && lrcResult?.synced?.length > 0) {
+    onStage('claude', 'running', 0);
+    const corrected = await callClaudeCorrection(whisperOut, lrcResult.synced);
+    if (corrected?.length > 0) { lyrics = corrected; claudeApplied = true; }
+    else { lyrics = mergeWordsIntoLines(lrcResult.synced, whisperOut); }
+    onStage('claude', claudeApplied ? 'done' : 'error', 0);
+  } else if (!whisperOut && hadLrc) {
+    lyrics = lrcResult.synced.length > 0 ? lrcResult.synced : [];
+    lyricsType = lrcResult.synced.length > 0 ? 'synced' : 'none';
+    onStage('claude', 'skipped', 0);
+  } else {
+    onStage('claude', 'skipped', 0);
+  }
+
+  return { instrumentalUrl, vocalsUrl, lyrics, lyricsAlt, lyricsType, claudeApplied, hadLrc, demucsErr, whisperErr };
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function parseLRC(lrc) {
   if (!lrc) return [];
@@ -377,7 +443,7 @@ const EDITOR_COLORS = [
 
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
-function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
+function LibraryScreen({ songs, queue = [], onPlay, onEdit, onDelete, onStartRandom }) {
   const [q, setQ] = useState('');
   const filtered = songs.filter(s => s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase()));
   return (
@@ -392,6 +458,30 @@ function LibraryScreen({ songs, onPlay, onEdit, onDelete, onStartRandom }) {
           <i className="ti ti-arrows-shuffle" aria-hidden="true" />
         </button>
       </div>
+      {/* Processing queue panel — shown when items exist */}
+      {queue.length > 0 && (
+        <div className="queue-panel">
+          <div className="queue-panel-header">
+            <span className="queue-panel-title"><i className="ti ti-stack-push" aria-hidden="true" /> Queue</span>
+            <span className="queue-panel-count">{queue.filter(i => i.status === 'waiting' || i.status === 'processing').length} pending</span>
+          </div>
+          {queue.map(item => (
+            <div key={item.qid} className={`queue-item queue-item--${item.status}`}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p className="queue-item-title">{item.title}{item.artist ? ` — ${item.artist}` : ''}</p>
+                <p className="queue-item-stage">{item.stageMsg}</p>
+                {item.error && <p className="queue-item-error">{item.error}</p>}
+              </div>
+              <span className="queue-item-icon">
+                {item.status === 'processing' && <i className="ti ti-loader spin" aria-hidden="true" />}
+                {item.status === 'done'       && <i className="ti ti-check"  style={{ color: '#20BF6B' }} aria-hidden="true" />}
+                {item.status === 'failed'     && <i className="ti ti-alert-triangle" style={{ color: 'var(--rose)' }} aria-hidden="true" />}
+                {item.status === 'waiting'    && <i className="ti ti-clock" style={{ color: 'var(--muted)' }} aria-hidden="true" />}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
         {filtered.length === 0 && songs.length > 0 && (<p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>No results for "{q}"</p>)}
@@ -683,7 +773,7 @@ function EditorScreen({ song, onSave, onBack }) {
 
 
 // ── ADD SONG SCREEN ───────────────────────────────────────────────────────────
-function AddSongScreen({ songs = [], onSave }) {
+function AddSongScreen({ songs = [], onSave, onAddToQueue }) {
   const [title, setTitle]         = useState('');
   const [artist, setArtist]       = useState('');
   const [origFile, setOrigFile]   = useState(null);
@@ -941,7 +1031,16 @@ function AddSongScreen({ songs = [], onSave }) {
           </div>
         ) : null;
       })()}
-      {mode === 'auto' && (<><div className="card"><span className="card-label">Upload original song</span><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Demucs separates vocals. WhisperX aligns word timestamps. Claude corrects text using LRClib. Original deleted after.</p><label className={`upload-zone${origFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} /><i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}</label></div><div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first for correct lyrics text. WhisperX provides timing. Claude combines both.</div><button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}><i className="ti ti-sparkles" aria-hidden="true" /> Process with Replicate + AI</button></>)}
+      {mode === 'auto' && (<><div className="card"><span className="card-label">Upload original song</span><p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>Demucs separates vocals. WhisperX aligns word timestamps. Claude corrects text using LRClib. Original deleted after.</p><label className={`upload-zone${origFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setOrigFile(e.target.files[0])} /><i className={`ti ${origFile ? 'ti-check' : 'ti-file-music'}`} style={{ color: origFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{origFile ? <p className="filename">{origFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Drop audio file here</p><p>MP3, WAV, FLAC, M4A</p></>}</label></div><div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /> LRClib checked first for correct lyrics text. WhisperX provides timing. Claude combines both.</div><button className="btn btn-process btn-full" onClick={handleProcess} disabled={!origFile || !title.trim()}><i className="ti ti-sparkles" aria-hidden="true" /> Process now</button>
+        {onAddToQueue && (
+          <button className="btn btn-secondary btn-full" onClick={() => {
+            if (!origFile || !title.trim()) return;
+            onAddToQueue({ file: origFile, title: title.trim(), artist: artist.trim() });
+            setTitle(''); setArtist(''); setOrigFile(null);
+          }} disabled={!origFile || !title.trim()}>
+            <i className="ti ti-stack-push" aria-hidden="true" /> Add to queue
+          </button>
+        )}</>)}
       {mode === 'manual' && (<><div className="card"><span className="card-label">Lyrics</span><button className="btn btn-secondary btn-full" style={{ marginBottom: 12 }} onClick={async () => { if (!title.trim()) return; const res = await lrcSearch(artist, title); if (res?.plain) setLyricsText(res.plain); else alert('Not found on LRClib.'); }}><i className="ti ti-search" aria-hidden="true" /> Search LRClib</button><textarea value={lyricsText} onChange={e => setLyricsText(e.target.value)} placeholder={"Paste lyrics here…\n\nOr LRC format:\n[00:12.34]First line"} rows={7} /></div><div className="card"><span className="card-label">Instrumental track</span><label className={`upload-zone${instrFile ? ' has-file' : ''}`}><input type="file" accept="audio/*" onChange={e => setInstrFile(e.target.files[0])} /><i className={`ti ${instrFile ? 'ti-check' : 'ti-music'}`} style={{ color: instrFile ? '#20bf6b' : 'var(--muted)' }} aria-hidden="true" />{instrFile ? <p className="filename">{instrFile.name}</p> : <><p style={{ fontWeight: 700, color: 'var(--text)' }}>Upload karaoke / instrumental</p><p>MP3, WAV, M4A</p></>}</label></div><button className="btn btn-primary btn-full" onClick={handleSave} disabled={!title.trim()}><i className="ti ti-plus" aria-hidden="true" /> Add to library</button></>)}
     </div>
   );
@@ -1379,57 +1478,136 @@ export default function App() {
   const [randomMode, setRandomMode] = useState(false);
   const [nextUpSong, setNextUpSong] = useState(null);
   const [settings, setSettings]     = useState(() => ({ defaultGuideVolume: 0, autoPlayRandom: false, ...loadSettings() }));
+  const [isDesktop, setIsDesktop]   = useState(() => window.innerWidth >= 900);
+
+  // ── Processing queue ────────────────────────────────────────────────────
+  const [queue, setQueue]         = useState([]);
+  const queueRef                  = useRef([]);
+  const queueActiveRef            = useRef(false);
+
+  function updateQueueItem(qid, patch) {
+    queueRef.current = queueRef.current.map(i => i.qid === qid ? { ...i, ...patch } : i);
+    setQueue([...queueRef.current]);
+  }
+
+  function addToQueue({ file, title, artist }) {
+    const item = { qid: uid(), file, title, artist, status: 'waiting', stageMsg: 'Waiting…', error: null };
+    queueRef.current = [...queueRef.current, item];
+    setQueue([...queueRef.current]);
+    if (!queueActiveRef.current) runQueueLoop();
+  }
+
+  async function runQueueLoop() {
+    queueActiveRef.current = true;
+    while (true) {
+      const next = queueRef.current.find(i => i.status === 'waiting');
+      if (!next) break;
+      updateQueueItem(next.qid, { status: 'processing', stageMsg: 'Starting…' });
+      try {
+        const result = await processSong(
+          { file: next.file, title: next.title, artist: next.artist },
+          (step) => {
+            const labels = { upload: 'Uploading…', demucs: 'Separating vocals…', whisper: 'Transcribing…', claude: 'Correcting lyrics…' };
+            updateQueueItem(next.qid, { stageMsg: labels[step] || 'Processing…' });
+          }
+        );
+        if (result) {
+          const slug = makeSongSlug(next.title, next.artist);
+          const newId = uid();
+          const libraryPath = `library/${slug}_${newId}.json`;
+          const song = { id: newId, title: next.title, artist: next.artist, addedAt: Date.now(), _libraryPath: libraryPath, audioUrl: result.instrumentalUrl, vocalsUrl: result.vocalsUrl, hasAudio: !!result.instrumentalUrl, lyrics: result.lyrics, lyricsAlt: result.lyricsAlt, lyricsType: result.lyricsType, lyricsSource: 'primary', plainLyrics: '' };
+          setSongs(prev => [song, ...prev]);
+          const stored = await saveSongData(song);
+          if (stored) setSongs(prev => prev.map(x => x.id === song.id ? stored : x));
+          updateQueueItem(next.qid, { status: 'done', stageMsg: '✓ Added to library' });
+        } else {
+          updateQueueItem(next.qid, { status: 'failed', stageMsg: 'Cancelled', error: 'Cancelled' });
+        }
+      } catch (e) {
+        updateQueueItem(next.qid, { status: 'failed', stageMsg: 'Failed', error: e.message });
+      }
+      await sleep(400);
+    }
+    queueActiveRef.current = false;
+  }
 
   const shouldAutoPlayRef = useRef(false);
   const songHistoryRef    = useRef([]);
 
   useEffect(() => { loadLibrary().then(loaded => { setSongs(loaded); setLoading(false); }); }, []);
+  useEffect(() => {
+    const check = () => setIsDesktop(window.innerWidth >= 900);
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
   useEffect(() => { if (randomMode && activeSong && songs.length > 1) setNextUpSong(pickRandomSong(songs, activeSong.id)); else if (!randomMode) setNextUpSong(null); }, [randomMode, activeSong?.id, songs.length]);
 
   function navigateToSong(song) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = true; setActiveSong(song); }
   function handlePlaySong(song) { if (activeSong) songHistoryRef.current = [...songHistoryRef.current.slice(-19), activeSong]; shouldAutoPlayRef.current = false; if (randomMode) stopRandomMode(); setActiveSong(song); }
   function navigateToPrevious() { const prev = songHistoryRef.current[songHistoryRef.current.length - 1]; if (!prev) return; songHistoryRef.current = songHistoryRef.current.slice(0, -1); shouldAutoPlayRef.current = true; setActiveSong(prev); }
-
   function handleSongEnd() { if (randomMode) { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } if (settings.autoPlayRandom && songs.length > 1) { const next = pickRandomSong(songs, activeSong?.id); if (next) { navigateToSong(next); return; } } shouldAutoPlayRef.current = false; }
   function startRandomMode() { const first = pickRandomSong(songs, activeSong?.id); if (!first) return; setRandomMode(true); navigateToSong(first); }
   function stopRandomMode()  { setRandomMode(false); setNextUpSong(null); }
   function skipToNextRandom() { const next = nextUpSong || pickRandomSong(songs, activeSong?.id); if (next) navigateToSong(next); }
-
   function handleSettingsChange(patch) { const u = { ...settings, ...patch }; setSettings(u); persistSettings(u); }
   async function handleAddSong(song)   { const s = { ...song, addedAt: Date.now() }; setSongs(prev => [s, ...prev]); setTab('library'); const stored = await saveSongData(s); if (stored) setSongs(prev => prev.map(x => x.id === s.id ? stored : x)); }
-  function handleRestoreSongs(restored) {
-    setSongs(prev => {
-      const ids = new Set(restored.map(s => s.id));
-      const withoutDups = prev.filter(s => !ids.has(s.id));
-      return [...restored, ...withoutDups].sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
-    });
-  }
+  function handleRestoreSongs(restored) { setSongs(prev => { const ids = new Set(restored.map(s => s.id)); return [...restored, ...prev.filter(s => !ids.has(s.id))].sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)); }); }
   async function handleSaveEdited(s)   { setSongs(prev => prev.map(x => x.id === s.id ? { ...x, ...s } : x)); setEditingSong(null); await saveSongData(s); }
   async function handleDeleteSong(song) { setSongs(prev => prev.filter(s => s.id !== song.id)); await archiveDeletedSong(song); }
 
-  if (editingSong) return (<div className="app-shell app-shell--wide"><EditorScreen song={editingSong} onSave={handleSaveEdited} onBack={() => setEditingSong(null)} /></div>);
+  if (editingSong) return (
+    <div className={`app-shell${isDesktop ? ' app-shell--wide' : ''}`}>
+      <EditorScreen song={editingSong} onSave={handleSaveEdited} onBack={() => setEditingSong(null)} />
+    </div>
+  );
 
+  const playerProps = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
+
+  const sidebarContent = loading
+    ? <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading…</div>
+    : <>
+        {tab === 'library'  && <LibraryScreen songs={songs} queue={queue} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} onStartRandom={startRandomMode} />}
+        {tab === 'add'      && <AddSongScreen songs={songs} onSave={handleAddSong} onAddToQueue={addToQueue} />}
+        {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} onRestoreSongs={handleRestoreSongs} />}
+      </>;
+
+  // ── Desktop two-column layout ────────────────────────────────────────────
+  if (isDesktop) return (
+    <div className="app-desktop">
+      <aside className="app-sidebar">
+        {sidebarContent}
+        <nav className="desktop-nav">
+          <button className={`desktop-nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /><span>Library</span></button>
+          <button className="desktop-nav-fab" onClick={() => setTab('add')} aria-label="Add song"><i className="ti ti-plus" aria-hidden="true" /></button>
+          <button className={`desktop-nav-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}><i className="ti ti-settings" aria-hidden="true" /><span>Settings</span></button>
+        </nav>
+      </aside>
+      <main className="app-main">
+        {activeSong
+          ? <PlayerScreen key={activeSong.id} {...playerProps} />
+          : <div className="desktop-empty"><i className="ti ti-microphone" aria-hidden="true" /><p>Select a song to start</p></div>
+        }
+      </main>
+    </div>
+  );
+
+  // ── Mobile layout ────────────────────────────────────────────────────────
   if (activeSong) return (
     <div className="app-shell app-shell--player">
-      <PlayerScreen song={activeSong} settings={settings} autoPlay={shouldAutoPlayRef.current} randomMode={randomMode} nextUpSong={nextUpSong}
-        onBack={() => { stopRandomMode(); setActiveSong(null); }} onSongEnd={handleSongEnd}
-        onStartRandom={startRandomMode} onStopRandom={stopRandomMode} onSkipRandom={skipToNextRandom} onGoToPrevious={navigateToPrevious} />
+      <PlayerScreen key={activeSong.id} {...playerProps} />
     </div>
   );
 
   return (
     <div className="app-shell">
-      {loading && (<div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}><i className="ti ti-loader spin" style={{ fontSize: 22 }} aria-hidden="true" /> Loading your library…</div>)}
-      {!loading && (<>
-        {tab === 'library'  && <LibraryScreen songs={songs} onPlay={handlePlaySong} onEdit={setEditingSong} onDelete={handleDeleteSong} onStartRandom={startRandomMode} />}
-        {tab === 'add'      && <AddSongScreen songs={songs} onSave={handleAddSong} />}
-        {tab === 'settings' && <SettingsScreen settings={settings} onSettingsChange={handleSettingsChange} onRestoreSongs={handleRestoreSongs} />}
+      {sidebarContent}
+      {!loading && (
         <nav className="bottom-nav">
           <button className={`nav-btn${tab === 'library' ? ' active' : ''}`} onClick={() => setTab('library')}><i className="ti ti-playlist" aria-hidden="true" /> Library</button>
           <button className="fab" onClick={() => setTab('add')} aria-label="Add song"><i className="ti ti-plus" aria-hidden="true" /></button>
           <button className={`nav-btn${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}><i className="ti ti-settings" aria-hidden="true" /> Settings</button>
         </nav>
-      </>)}
+      )}
     </div>
   );
 }
