@@ -1,6 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
+// ── AudioContext precision clock (module-level singleton) ─────────────────────
+// Used for lyric timing only — never for audio routing.
+// AudioContext.currentTime is driven by the audio hardware and immune to VBR drift.
+let _audioClock = null;
+function getAudioClock() {
+  if (!_audioClock) {
+    try { _audioClock = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
+  }
+  if (_audioClock.state === 'suspended') _audioClock.resume().catch(() => {});
+  return _audioClock;
+}
+
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const SUPA_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -910,11 +922,20 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
   const [isCinematic, setIsCinematic] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
   useEffect(() => { const check = () => setIsCinematic(window.innerWidth >= 768); window.addEventListener('resize', check); return () => window.removeEventListener('resize', check); }, []);
 
+  const clockAnchorRef = useRef(null); // { clockTime, audioTime } — set on every play/resume/seek
+
   stateRef.current = { playing, currentTime, duration, randomMode, guideVolume, hasNext, onSongEnd };
+
+  // Record where we are in both clocks so the RAF tick can interpolate accurately
+  function setClockAnchor(audioTime) {
+    const clock = getAudioClock();
+    if (clock) clockAnchorRef.current = { clockTime: clock.currentTime, audioTime };
+  }
 
   useEffect(() => {
     setPlaying(false); setCurrentTime(0); setDuration(0); setActiveLine(-1);
     setGuideExpanded(false); setGuideVolume(settings?.defaultGuideVolume ?? 0); setPlayError(null);
+    clockAnchorRef.current = null; // discard anchor — new song starts fresh
     if (autoPlay) { const t = setTimeout(() => setPlaying(true), 300); return () => clearTimeout(t); }
   }, [song.id]);
 
@@ -936,24 +957,30 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     const main = audioRef.current; const guide = guideRef.current; if (!main) return;
     if (playing) {
       main.volume = settings.masterVolume ?? 1;
+      getAudioClock(); // ensure clock is running (resumes if suspended)
       main.play().then(() => {
-        // Immediately pause+resume to force the browser to re-anchor currentTime
-        // from the decoded frame position rather than the estimated byte position.
-        // This is the programmatic equivalent of the manual pause→play fix for VBR MP3s.
-        // Happens within one event-loop tick — inaudible.
-        main.pause();
-        main.play().catch(() => {});
+        // Set anchor: hardware clock time + audio element position at moment play starts.
+        // The RAF tick will use (clock.currentTime - anchorClockTime) for elapsed time,
+        // which is immune to VBR drift in audio.currentTime.
+        setClockAnchor(main.currentTime);
       }).catch(err => {
         if (err.name === 'AbortError') return;
         console.error('Playback failed:', err.message);
-        if (song.audioUrl?.startsWith('blob:')) console.warn('Expired blob URL — re-add this song');
+        if (song.audioUrl?.startsWith('blob:')) console.warn('Expired blob URL');
         setPlaying(false);
         setPlayError(song.audioUrl?.startsWith('blob:') ? 'Audio expired — re-add this song to fix.' : `Could not play. (${err.message})`);
       });
       if (guide && guideVolume > 0) { guide.currentTime = main.currentTime; guide.play().catch(() => {}); }
       const tick = () => {
-        const t = main.currentTime; setCurrentTime(t);
-        if (song.lyrics?.length > 0) { let idx = -1; for (let i = 0; i < song.lyrics.length; i++) { if (song.lyrics[i].time <= t) idx = i; else break; } setActiveLine(idx); }
+        // Prefer hardware-clock time for lyrics; fall back to audio.currentTime if no anchor yet
+        const anchor = clockAnchorRef.current;
+        const clock  = _audioClock;
+        const t = (anchor && clock)
+          ? Math.min(anchor.audioTime + (clock.currentTime - anchor.clockTime), duration || Infinity)
+          : main.currentTime;
+        setCurrentTime(t);
+        const src = song.lyrics?.length > 0 ? song.lyrics : [];
+        if (src.length > 0) { let idx = -1; for (let i = 0; i < src.length; i++) { if (src[i].time <= t) idx = i; else break; } setActiveLine(idx); }
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
@@ -975,8 +1002,8 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       switch (e.key) {
         case ' ': e.preventDefault(); setPlaying(p => !p); break;
         case 'Escape': e.preventDefault(); onBack?.(); break;
-        case 'ArrowRight': e.preventDefault(); if (refHasNext) { refOnSongEnd?.(); } else if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); } break;
-        case 'ArrowLeft': e.preventDefault(); if (currentTime <= 2) { onGoToPrevious?.(); } else { if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); } if (guideRef.current) guideRef.current.currentTime = 0; } break;
+        case 'ArrowRight': e.preventDefault(); if (refHasNext) { refOnSongEnd?.(); } else if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; if (_audioClock) clockAnchorRef.current = { clockTime: _audioClock.currentTime, audioTime: t }; setCurrentTime(t); } break;
+        case 'ArrowLeft': e.preventDefault(); if (currentTime <= 2) { onGoToPrevious?.(); } else { if (audioRef.current) { audioRef.current.currentTime = 0; } if (guideRef.current) guideRef.current.currentTime = 0; if (_audioClock) clockAnchorRef.current = { clockTime: _audioClock.currentTime, audioTime: 0 }; setCurrentTime(0); setActiveLine(-1); } break;
         case 'm': case 'M': setGuideVolume(v => v > 0 ? 0 : 0.3); break;
         case 'r': case 'R': if (randomMode) onStopRandom?.(); else onStartRandom?.(); break;
         case 'f': case 'F': if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch?.(() => {}); else document.exitFullscreen?.().catch?.(() => {}); break;
@@ -986,13 +1013,30 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  function seek(e) { const r = e.currentTarget.getBoundingClientRect(); const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (duration || 0); if (audioRef.current) audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); }
-  function handleRestart() { if (audioRef.current) { audioRef.current.currentTime = 0; setCurrentTime(0); setActiveLine(-1); } if (guideRef.current) guideRef.current.currentTime = 0; }
+  function seek(e) {
+    const r = e.currentTarget.getBoundingClientRect();
+    const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (duration || 0);
+    if (audioRef.current) audioRef.current.currentTime = t;
+    if (guideRef.current) guideRef.current.currentTime = t;
+    setClockAnchor(t); // re-anchor so clock-based time stays accurate after seek
+    setCurrentTime(t);
+  }
+  function handleRestart() {
+    if (audioRef.current) { audioRef.current.currentTime = 0; }
+    if (guideRef.current) guideRef.current.currentTime = 0;
+    setClockAnchor(0);
+    setCurrentTime(0);
+    setActiveLine(-1);
+  }
   function handleSkip() {
-    // If there's something queued or random mode is on, advance to next song
     if (hasNext) { onSongEnd?.(); return; }
-    // Otherwise fall back to +10s seek
-    if (audioRef.current) { const t = Math.min(duration, currentTime + 10); audioRef.current.currentTime = t; if (guideRef.current) guideRef.current.currentTime = t; setCurrentTime(t); }
+    if (audioRef.current) {
+      const t = Math.min(duration, currentTime + 10);
+      audioRef.current.currentTime = t;
+      if (guideRef.current) guideRef.current.currentTime = t;
+      setClockAnchor(t);
+      setCurrentTime(t);
+    }
   }
 
   // Respect the source preference saved from the editor
