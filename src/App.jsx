@@ -251,7 +251,9 @@ async function repPoll(predId, onTick, cancelRef) {
 // reconstructFromMinimal turns it back into full lyrics using lrcLines text.
 function reconstructFromMinimal(minimal, lrcLines) {
   const lrcMap = Object.fromEntries(lrcLines.map(l => [l.id, l]));
-  return minimal.map(item => {
+
+  // First pass: positional 1-to-1 mapping of timestamp pairs to text words
+  const lines = minimal.map(item => {
     const lrc = lrcMap[item.id];
     if (!lrc) return null;
     const textWords = lrc.text.split(/\s+/).filter(Boolean);
@@ -260,6 +262,30 @@ function reconstructFromMinimal(minimal, lrcLines) {
     }));
     return { ...lrc, time: item.t != null ? item.t : lrc.time, words, endTime: words[words.length - 1]?.end ?? lrc.endTime };
   }).filter(Boolean);
+
+  // Second pass: interpolate timestamps for missing tail words.
+  // WhisperX sometimes misses the last 1-2 words of a line (soft/trailing vocals).
+  // Without this, those words vanish during the wash display and are absent from the editor.
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const textWords = line.text.split(/\s+/).filter(Boolean);
+    const missing = textWords.length - (line.words?.length || 0);
+    if (missing <= 0 || !line.words?.length) continue;
+
+    const lastChip  = line.words[line.words.length - 1];
+    // Spread missing words across the gap to the next line (or 1s per word if no next line)
+    const windowEnd = lines[i + 1]?.time ?? (lastChip.end + missing * 1.0);
+    const gap       = Math.max(0, windowEnd - lastChip.end);
+    const step      = gap > 0 ? Math.min(gap / missing, 1.5) : 0.5; // cap at 1.5s per word
+
+    for (let j = 0; j < missing; j++) {
+      const wordStart = lastChip.end + j * step;
+      line.words.push({ word: textWords[line.words.length], start: wordStart, end: wordStart + step });
+    }
+    line.endTime = line.words[line.words.length - 1].end;
+  }
+
+  return lines;
 }
 
 async function callClaudeCorrection(whisperOut, lrcLines) {
@@ -1075,28 +1101,31 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     if (!line) return '\u00A0';
     const lineColor = line.color || 'var(--amber)';
     if (lyricMode === 'wash' && line.words?.length > 0) {
+      // Always iterate line.text words — not line.words.
+      // Chips (line.words) may be shorter than the text (WhisperX missed some words),
+      // or slightly misaligned (Claude shifted assignment). By driving from text and
+      // using chips[i] purely for timing, every word stays visible regardless of
+      // data quality. Words without a matching chip show at lineColor (no animation).
+      const textWords = line.text?.split(/\s+/).filter(Boolean) || [];
+      const chips     = line.words;
       return (
         <span>
-          {line.words.map((w, i) => {
-            const nextWord = line.words[i + 1];
+          {textWords.map((word, i) => {
+            const chip     = chips[i];       // timing for this word (may be undefined)
+            const nextChip = chips[i + 1];   // used to detect when this word ends
             let color;
-            if (currentTime < w.start) {
-              // Not started yet
-              color = lineColor;
-            } else if (!nextWord || currentTime < nextWord.start) {
-              // Actively singing this word: stays highlighted until the NEXT word begins.
-              // Using next-word-start (not this word's end) prevents words from blinking
-              // through their highlight state and fixes the last-word-disappears bug.
-              color = makePale(line.color || '#F4A827');
+            if (!chip) {
+              color = lineColor;             // no timing data — show visibly, no animation
+            } else if (currentTime < chip.start) {
+              color = lineColor;             // not yet
+            } else if (!nextChip || currentTime < nextChip.start) {
+              color = makePale(line.color || '#F4A827'); // currently singing
             } else {
-              // This word is done and the next word has started.
-              // 0.42 opacity keeps past words readable — prevents the "word vanishes" effect
-              // that happened with the previous 0.18 value.
-              color = 'rgba(237,233,224,0.42)';
+              color = 'rgba(237,233,224,0.42)';          // sung, dimmed but readable
             }
             return (
               <span key={i} style={{ color, transition: 'color 0.1s' }}>
-                {w.word}{i < line.words.length - 1 ? ' ' : ''}
+                {word}{i < textWords.length - 1 ? ' ' : ''}
               </span>
             );
           })}
