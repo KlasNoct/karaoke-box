@@ -949,6 +949,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
   useEffect(() => { const check = () => setIsCinematic(window.innerWidth >= 768); window.addEventListener('resize', check); return () => window.removeEventListener('resize', check); }, []);
 
   const clockAnchorRef = useRef(null); // { clockTime, audioTime } — set on every play/resume/seek
+  const seekSafetyRef  = useRef(null); // timeout handle for seek watchdog
 
   stateRef.current = { playing, currentTime, duration, randomMode, guideVolume, hasNext, onSongEnd };
 
@@ -994,15 +995,63 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     else { guide.addEventListener('canplay', doStart, { once: true }); }
   }
 
+  // Reload: reset the audio element and restart playback from 0.
+  // Used by the reload button and the stuck-playback watchdog.
+  // audio.load() clears any error state and re-fetches from the URL (new CDN request).
+  function reloadSong() {
+    const main = audioRef.current;
+    if (!main) return;
+    setPlayError(null);
+    clockAnchorRef.current = null;
+    main.load();                              // reset element — clears errors, re-fetches URL
+    setPlaying(false);
+    setTimeout(() => setPlaying(true), 400); // re-trigger play effect after load settles
+  }
+
+  // Sync: re-anchor the lyrics clock and snap guide vocals to instrumental position.
+  // Equivalent to pause+play but without interrupting audio — useful when guide
+  // vocals drift or lyrics fall behind due to VBR timing drift.
+  function handleSync() {
+    const main  = audioRef.current;
+    const guide = guideRef.current;
+    if (!main) return;
+    setClockAnchor(main.currentTime);                     // re-anchor lyrics timing
+    if (guide && guideVolume > 0) {
+      guide.currentTime = main.currentTime;               // snap guide to instrumental
+      if (guide.paused && !main.paused) guide.play().catch(() => {});
+    }
+  }
+
   useEffect(() => {
     const main = audioRef.current; const guide = guideRef.current; if (!main) return;
     if (playing) {
       main.volume = settings.masterVolume ?? 1;
       getAudioClock(); // ensure clock is running (resumes if suspended)
+
+      // Watchdog: if currentTime hasn't advanced past 0.1s within 3s of play starting,
+      // the element is likely stuck (broken URL, network error, Cloudflare rejection).
+      // Auto-reload instead of silently sitting at 0:00.
+      const watchdog = setTimeout(() => {
+        if (audioRef.current && audioRef.current.currentTime < 0.1 && !audioRef.current.paused) {
+          reloadSong();
+        }
+      }, 3000);
+      main.addEventListener('timeupdate', () => clearTimeout(watchdog), { once: true });
+
       main.play().then(() => {
         setClockAnchor(main.currentTime);
       }).catch(err => {
-        if (err.name === 'AbortError') return;
+        if (err.name === 'AbortError') {
+          // AbortError is common during navigation — retry once after a short delay
+          setTimeout(() => {
+            if (!audioRef.current || !audioRef.current.paused) return;
+            audioRef.current.play()
+              .then(() => setClockAnchor(audioRef.current.currentTime))
+              .catch(() => { clearTimeout(watchdog); setPlaying(false); });
+          }, 250);
+          return;
+        }
+        clearTimeout(watchdog);
         console.error('Playback failed:', err.message);
         if (song.audioUrl?.startsWith('blob:')) console.warn('Expired blob URL');
         setPlaying(false);
@@ -1063,10 +1112,29 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
   function seek(e) {
     const r = e.currentTarget.getBoundingClientRect();
     const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (duration || 0);
-    if (audioRef.current) audioRef.current.currentTime = t;
+    const main = audioRef.current;
+    if (!main) return;
+
+    setCurrentTime(t); // immediate visual feedback
+
+    // Re-anchor AFTER the browser confirms the seek position — critical for VBR MP3s
+    // where the actual seeked position can differ from the requested one.
+    clearTimeout(seekSafetyRef.current);
+    const onSeeked = () => {
+      clearTimeout(seekSafetyRef.current);
+      const actual = main.currentTime;
+      setClockAnchor(actual);
+      if (guideRef.current) guideRef.current.currentTime = actual;
+    };
+    main.addEventListener('seeked', onSeeked, { once: true });
+    // Safety: if seeked never fires (e.g. network stall), anchor after 2s anyway
+    seekSafetyRef.current = setTimeout(() => {
+      main.removeEventListener('seeked', onSeeked);
+      setClockAnchor(main.currentTime);
+    }, 2000);
+
+    main.currentTime = t;
     if (guideRef.current) guideRef.current.currentTime = t;
-    setClockAnchor(t); // re-anchor so clock-based time stays accurate after seek
-    setCurrentTime(t);
   }
   function handleRestart() {
     if (audioRef.current) { audioRef.current.currentTime = 0; }
@@ -1221,9 +1289,11 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       <div className="cinematic-bar">
         <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart"><i className="ti ti-player-skip-back" aria-hidden="true" /></button>
         {playBtn}
-        <button className="ctrl-btn" onClick={handleSkip} aria-label={randomMode ? 'Next random' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
+        <button className="ctrl-btn" onClick={handleSkip} aria-label={hasNext ? 'Next song' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
         <div className="cinematic-progress" onClick={seek}><div className="cinematic-fill" style={{ width: `${pct}%` }} /></div>
         <span className="cinematic-time">{fmt(currentTime)} / {fmt(duration)}</span>
+        <button className="ctrl-btn" onClick={handleSync} aria-label="Sync lyrics and guide vocals" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-rotate-clockwise" aria-hidden="true" /></button>
+        <button className="ctrl-btn" onClick={reloadSong} aria-label="Reload song" title="Reload — restart if audio is stuck"><i className="ti ti-refresh" aria-hidden="true" /></button>
         <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
       </div>
       {hintLine}
@@ -1257,7 +1327,9 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       <div className="controls">
         <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart"><i className="ti ti-player-skip-back" aria-hidden="true" /></button>
         {playBtn}
-        <button className="ctrl-btn" onClick={handleSkip} aria-label={randomMode ? 'Next random' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
+        <button className="ctrl-btn" onClick={handleSkip} aria-label={hasNext ? 'Next song' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
+        <button className="ctrl-btn" onClick={handleSync} aria-label="Sync" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-rotate-clockwise" aria-hidden="true" /></button>
+        <button className="ctrl-btn" onClick={reloadSong} aria-label="Reload" title="Reload — restart if audio is stuck"><i className="ti ti-refresh" aria-hidden="true" /></button>
       </div>
       {hintLine}
     </div>
@@ -1719,6 +1791,16 @@ export default function App() {
   // ── Performance queue functions ──────────────────────────────────────────
   // Persist whenever perfQueue changes
   useEffect(() => { savePerfQueue(perfQueue); }, [perfQueue]);
+
+  // Pre-warm CDN connections for the next two songs whenever the queue front changes.
+  // HEAD requests are header-only (~0 bytes) — they establish the Cloudflare connection
+  // and warm the cache so media requests start immediately when the song loads.
+  // Covers both natural song-end advances and early skips.
+  useEffect(() => {
+    const hw = url => { if (url) fetch(url, { method: 'HEAD' }).catch(() => {}); };
+    hw(perfQueue[0]?.audioUrl); hw(perfQueue[0]?.vocalsUrl);
+    hw(perfQueue[1]?.audioUrl); hw(perfQueue[1]?.vocalsUrl);
+  }, [`${perfQueue[0]?.id ?? ''}|${perfQueue[1]?.id ?? ''}`]); // eslint-disable-line
 
   function perfQueueAddFront(song) { setPerfQueue(q => { const next = [song, ...q]; return next; }); }
   function perfQueueAddEnd(song)   { setPerfQueue(q => [...q, song]); }
