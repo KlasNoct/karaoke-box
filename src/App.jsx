@@ -929,7 +929,7 @@ function AddSongScreen({ songs = [], onSave, onAddToQueue }) {
 
 
 // ── PLAYER SCREEN ─────────────────────────────────────────────────────────────
-function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQueuedSong, hasNext, onBack, onSongEnd, onStartRandom, onStopRandom, onSkipRandom, onGoToPrevious }) {
+function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQueuedSong, hasNext, onBack, onSongEnd, onReload, onStartRandom, onStopRandom, onSkipRandom, onGoToPrevious }) {
   const audioRef  = useRef(null);
   const guideRef  = useRef(null);
   const rafRef    = useRef(null);
@@ -996,17 +996,13 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     else { guide.addEventListener('canplay', doStart, { once: true }); }
   }
 
-  // Reload: reset the audio element and restart playback from 0.
-  // Used by the reload button and the stuck-playback watchdog.
-  // audio.load() clears any error state and re-fetches from the URL (new CDN request).
+  // Reload: triggered by the reload button or called from App when needed.
+  // Clears any error state, then delegates to App for a full PlayerScreen remount
+  // (the only reliable way to get a fresh audio element + new CDN request).
   function reloadSong() {
-    const main = audioRef.current;
-    if (!main) return;
     setPlayError(null);
-    clockAnchorRef.current = null;
-    main.load();                              // reset element — clears errors, re-fetches URL
     setPlaying(false);
-    setTimeout(() => setPlaying(true), 400); // re-trigger play effect after load settles
+    onReload?.();
   }
 
   // Sync: re-anchor the lyrics clock and snap guide vocals to instrumental position.
@@ -1860,7 +1856,25 @@ export default function App() {
   );
 
   const settingsProps = { settings, onSettingsChange: handleSettingsChange, onRestoreSongs: handleRestoreSongs, songs, onAddSong: handleAddSong, queue, queueRunning, onAddToQueue: addToQueue, onRemoveFromQueue: removeFromQueue, onStartQueue: startQueue };
-  const playerProps   = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, nextQueuedSong: perfQueue[0] || null, hasNext: perfQueue.length > 0 || randomMode, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
+  // Proper reload: pre-warm CDN connections then fully remount the PlayerScreen.
+  // This gives a completely fresh <audio> element and a new CDN request, unlike
+  // audio.load() which reuses the same element in the same (potentially broken) state.
+  function handleReloadSong() {
+    const song = activeSong;
+    if (!song) return;
+    // Fire HEAD requests to establish fresh Cloudflare connections before remounting.
+    // By the time the new audio element makes its media request (~350ms later),
+    // the CDN cookie will be set and the connection warm.
+    if (song.audioUrl)  fetch(song.audioUrl,  { method: 'HEAD' }).catch(() => {});
+    if (song.vocalsUrl) fetch(song.vocalsUrl, { method: 'HEAD' }).catch(() => {});
+    shouldAutoPlayRef.current = true;
+    setTimeout(() => {
+      setActiveSong(null);                           // unmount PlayerScreen
+      setTimeout(() => setActiveSong(song), 80);    // remount with same song — full fresh state
+    }, 200); // 200ms head-start for CDN pre-warm
+  }
+
+  const playerProps   = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, nextQueuedSong: perfQueue[0] || null, hasNext: perfQueue.length > 0 || randomMode, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onReload: handleReloadSong, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
 
   const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={setEditingSong} onStartRandom={startRandomMode} />;
   const settingsView = <SettingsScreen {...settingsProps} />;
