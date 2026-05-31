@@ -950,6 +950,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
 
   const clockAnchorRef = useRef(null); // { clockTime, audioTime } — set on every play/resume/seek
   const seekSafetyRef  = useRef(null); // timeout handle for seek watchdog
+  const retryTimerRef  = useRef(null); // timeout handle for AbortError retry
 
   stateRef.current = { playing, currentTime, duration, randomMode, guideVolume, hasNext, onSongEnd };
 
@@ -1028,35 +1029,25 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       main.volume = settings.masterVolume ?? 1;
       getAudioClock(); // ensure clock is running (resumes if suspended)
 
-      // Watchdog: if currentTime hasn't advanced past 0.1s within 3s of play starting,
-      // the element is likely stuck (broken URL, network error, Cloudflare rejection).
-      // Auto-reload instead of silently sitting at 0:00.
-      const watchdog = setTimeout(() => {
-        if (audioRef.current && audioRef.current.currentTime < 0.1 && !audioRef.current.paused) {
-          reloadSong();
-        }
-      }, 3000);
-      main.addEventListener('timeupdate', () => clearTimeout(watchdog), { once: true });
-
       main.play().then(() => {
         setClockAnchor(main.currentTime);
       }).catch(err => {
         if (err.name === 'AbortError') {
-          // AbortError is common during navigation — retry once after a short delay
-          setTimeout(() => {
+          // AbortError during navigation — retry once after a short delay.
+          // Stored in a ref so the cleanup below can cancel it if the song changes.
+          retryTimerRef.current = setTimeout(() => {
             if (!audioRef.current || !audioRef.current.paused) return;
             audioRef.current.play()
               .then(() => setClockAnchor(audioRef.current.currentTime))
-              .catch(() => { clearTimeout(watchdog); setPlaying(false); });
+              .catch(() => setPlaying(false));
           }, 250);
           return;
         }
-        clearTimeout(watchdog);
         console.error('Playback failed:', err.message);
-        if (song.audioUrl?.startsWith('blob:')) console.warn('Expired blob URL');
         setPlaying(false);
         setPlayError(song.audioUrl?.startsWith('blob:') ? 'Audio expired — re-add this song to fix.' : `Could not play. (${err.message})`);
       });
+
       if (guide && guideVolume > 0) {
         startGuideSynced(main, guide, (settings.masterVolume ?? 1) * guideVolume);
       }
@@ -1079,7 +1070,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       };
       rafRef.current = requestAnimationFrame(tick);
     } else { main.pause(); guide?.pause(); cancelAnimationFrame(rafRef.current); }
-    return () => cancelAnimationFrame(rafRef.current);
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      clearTimeout(retryTimerRef.current); // cancel pending retry if song changes mid-flight
+    };
   }, [playing]);
 
   useEffect(() => {
@@ -1203,7 +1197,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     return line.text;
   }
 
-  const audioEls = (<>{song.audioUrl && <audio ref={audioRef} src={song.audioUrl} preload="auto" />}{song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="auto" />}</>);
+  const audioEls = (<>{song.audioUrl && <audio ref={audioRef} src={song.audioUrl} preload="auto" />}{song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="metadata" />}</>);
 
   const randomBand = randomMode && (<div className="random-band"><div className="random-band-label"><i className="ti ti-arrows-shuffle" style={{ fontSize: 14 }} aria-hidden="true" /> Random mode</div><button className="random-stop-btn" onClick={onStopRandom} aria-label="Stop random mode"><i className="ti ti-x" style={{ fontSize: 11 }} aria-hidden="true" /> Stop</button></div>);
 
