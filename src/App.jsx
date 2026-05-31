@@ -992,7 +992,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
           ? Math.min(anchor.audioTime + (clock.currentTime - anchor.clockTime), duration || Infinity)
           : main.currentTime;
         setCurrentTime(t);
-        const src = song.lyrics?.length > 0 ? song.lyrics : [];
+        // Use the same source the display uses — primary or alt depending on song preference
+        const src = (song.lyricsSource === 'alt' && song.lyricsAlt?.length > 0)
+          ? song.lyricsAlt
+          : (song.lyrics || []);
         if (src.length > 0) {
           let idx = -1;
           for (let i = 0; i < src.length; i++) {
@@ -1082,7 +1085,31 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     if (!line) return '\u00A0';
     const lineColor = line.color || 'var(--amber)';
     if (lyricMode === 'wash' && line.words?.length > 0) {
-      return (<span>{line.words.map((w, i) => { let color; if (currentTime >= w.end) color = 'rgba(237,233,224,0.18)'; else if (currentTime >= w.start) color = makePale(line.color || '#F4A827'); else color = lineColor; return <span key={i} style={{ color, transition: 'color 0.1s' }}>{w.word}{i < line.words.length - 1 ? ' ' : ''}</span>; })}</span>);
+      return (
+        <span>
+          {line.words.map((w, i) => {
+            // Guard: skip word-level timing if data is missing or degenerate
+            const wStart = (w.start > 0) ? w.start : null;
+            // Ensure at least 150ms highlight window so short words don't flash invisibly
+            const wEnd = (w.end > 0 && w.end > w.start)
+              ? Math.max(w.end, w.start + 0.15)
+              : null;
+            let color;
+            if (wEnd !== null && currentTime >= wEnd) {
+              color = 'rgba(237,233,224,0.32)'; // past — legible but clearly sung
+            } else if (wStart !== null && currentTime >= wStart) {
+              color = makePale(line.color || '#F4A827'); // active highlight
+            } else {
+              color = lineColor; // upcoming
+            }
+            return (
+              <span key={i} style={{ color, transition: 'color 0.06s' }}>
+                {w.word}{i < line.words.length - 1 ? ' ' : ''}
+              </span>
+            );
+          })}
+        </span>
+      );
     }
     return line.text;
   }
