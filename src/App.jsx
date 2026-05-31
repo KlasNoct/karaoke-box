@@ -992,21 +992,11 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
           ? Math.min(anchor.audioTime + (clock.currentTime - anchor.clockTime), duration || Infinity)
           : main.currentTime;
         setCurrentTime(t);
-        // Use the same source the display uses — primary or alt depending on song preference
-        const src = (song.lyricsSource === 'alt' && song.lyricsAlt?.length > 0)
-          ? song.lyricsAlt
-          : (song.lyrics || []);
+        const src = song.lyrics?.length > 0 ? song.lyrics : [];
         if (src.length > 0) {
           let idx = -1;
           for (let i = 0; i < src.length; i++) {
             if (src[i].time <= t) idx = i; else break;
-          }
-          // Don't advance to the next line until the current line's last word finishes.
-          // Prevents the last word from vanishing early when the next line starts mid-word.
-          if (idx > 0) {
-            const prev = src[idx - 1];
-            const prevLastWordEnd = prev.words?.[prev.words.length - 1]?.end ?? 0;
-            if (prevLastWordEnd > 0 && t < prevLastWordEnd) idx = idx - 1;
           }
           setActiveLine(idx);
         }
@@ -1088,22 +1078,24 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       return (
         <span>
           {line.words.map((w, i) => {
-            // Guard: skip word-level timing if data is missing or degenerate
-            const wStart = (w.start > 0) ? w.start : null;
-            // Ensure at least 150ms highlight window so short words don't flash invisibly
-            const wEnd = (w.end > 0 && w.end > w.start)
-              ? Math.max(w.end, w.start + 0.15)
-              : null;
+            const nextWord = line.words[i + 1];
             let color;
-            if (wEnd !== null && currentTime >= wEnd) {
-              color = 'rgba(237,233,224,0.32)'; // past — legible but clearly sung
-            } else if (wStart !== null && currentTime >= wStart) {
-              color = makePale(line.color || '#F4A827'); // active highlight
+            if (currentTime < w.start) {
+              // Not started yet
+              color = lineColor;
+            } else if (!nextWord || currentTime < nextWord.start) {
+              // Actively singing this word: stays highlighted until the NEXT word begins.
+              // Using next-word-start (not this word's end) prevents words from blinking
+              // through their highlight state and fixes the last-word-disappears bug.
+              color = makePale(line.color || '#F4A827');
             } else {
-              color = lineColor; // upcoming
+              // This word is done and the next word has started.
+              // 0.42 opacity keeps past words readable — prevents the "word vanishes" effect
+              // that happened with the previous 0.18 value.
+              color = 'rgba(237,233,224,0.42)';
             }
             return (
-              <span key={i} style={{ color, transition: 'color 0.06s' }}>
+              <span key={i} style={{ color, transition: 'color 0.1s' }}>
                 {w.word}{i < line.words.length - 1 ? ' ' : ''}
               </span>
             );
