@@ -953,15 +953,27 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     };
   }, [song.id]);
 
+  // Start guide vocals synced to wherever the instrumental currently is.
+  // If guide isn't buffered yet, wait for canplay then seek to current position.
+  // This prevents the ~3s late-start caused by a cold browser cache.
+  function startGuideSynced(main, guide, vol) {
+    if (!guide || !main) return;
+    const doStart = () => {
+      if (main.paused) return; // user paused while guide was loading — don't start
+      guide.volume = vol;
+      guide.currentTime = main.currentTime; // catch up to wherever instrumental is
+      guide.play().catch(() => {});
+    };
+    if (guide.readyState >= 2) { doStart(); }
+    else { guide.addEventListener('canplay', doStart, { once: true }); }
+  }
+
   useEffect(() => {
     const main = audioRef.current; const guide = guideRef.current; if (!main) return;
     if (playing) {
       main.volume = settings.masterVolume ?? 1;
       getAudioClock(); // ensure clock is running (resumes if suspended)
       main.play().then(() => {
-        // Set anchor: hardware clock time + audio element position at moment play starts.
-        // The RAF tick will use (clock.currentTime - anchorClockTime) for elapsed time,
-        // which is immune to VBR drift in audio.currentTime.
         setClockAnchor(main.currentTime);
       }).catch(err => {
         if (err.name === 'AbortError') return;
@@ -970,9 +982,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         setPlaying(false);
         setPlayError(song.audioUrl?.startsWith('blob:') ? 'Audio expired — re-add this song to fix.' : `Could not play. (${err.message})`);
       });
-      if (guide && guideVolume > 0) { guide.currentTime = main.currentTime; guide.play().catch(() => {}); }
+      if (guide && guideVolume > 0) {
+        startGuideSynced(main, guide, (settings.masterVolume ?? 1) * guideVolume);
+      }
       const tick = () => {
-        // Prefer hardware-clock time for lyrics; fall back to audio.currentTime if no anchor yet
         const anchor = clockAnchorRef.current;
         const clock  = _audioClock;
         const t = (anchor && clock)
@@ -980,7 +993,20 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
           : main.currentTime;
         setCurrentTime(t);
         const src = song.lyrics?.length > 0 ? song.lyrics : [];
-        if (src.length > 0) { let idx = -1; for (let i = 0; i < src.length; i++) { if (src[i].time <= t) idx = i; else break; } setActiveLine(idx); }
+        if (src.length > 0) {
+          let idx = -1;
+          for (let i = 0; i < src.length; i++) {
+            if (src[i].time <= t) idx = i; else break;
+          }
+          // Don't advance to the next line until the current line's last word finishes.
+          // Prevents the last word from vanishing early when the next line starts mid-word.
+          if (idx > 0) {
+            const prev = src[idx - 1];
+            const prevLastWordEnd = prev.words?.[prev.words.length - 1]?.end ?? 0;
+            if (prevLastWordEnd > 0 && t < prevLastWordEnd) idx = idx - 1;
+          }
+          setActiveLine(idx);
+        }
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
@@ -989,9 +1015,11 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
   }, [playing]);
 
   useEffect(() => {
-    const guide = guideRef.current; if (!guide) return;
+    const guide = guideRef.current; const main = audioRef.current; if (!guide) return;
     guide.volume = (settings.masterVolume ?? 1) * guideVolume;
-    if (playing && guideVolume > 0) { guide.currentTime = audioRef.current?.currentTime || 0; guide.play().catch(() => {}); }
+    if (playing && guideVolume > 0) {
+      startGuideSynced(main, guide, (settings.masterVolume ?? 1) * guideVolume);
+    }
     else if (guideVolume === 0) guide.pause();
   }, [guideVolume]);
 
@@ -1059,7 +1087,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     return line.text;
   }
 
-  const audioEls = (<>{song.audioUrl && <audio ref={audioRef} src={song.audioUrl} preload="auto" />}{song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="metadata" />}</>);
+  const audioEls = (<>{song.audioUrl && <audio ref={audioRef} src={song.audioUrl} preload="auto" />}{song.vocalsUrl && <audio ref={guideRef} src={song.vocalsUrl} preload="auto" />}</>);
 
   const randomBand = randomMode && (<div className="random-band"><div className="random-band-label"><i className="ti ti-arrows-shuffle" style={{ fontSize: 14 }} aria-hidden="true" /> Random mode</div><button className="random-stop-btn" onClick={onStopRandom} aria-label="Stop random mode"><i className="ti ti-x" style={{ fontSize: 11 }} aria-hidden="true" /> Stop</button></div>);
 
