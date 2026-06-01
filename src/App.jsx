@@ -964,7 +964,21 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     setPlaying(false); setCurrentTime(0); setDuration(0); setActiveLine(-1);
     setGuideExpanded(false); setGuideVolume(settings?.defaultGuideVolume ?? 0); setPlayError(null);
     clockAnchorRef.current = null; // discard anchor — new song starts fresh
-    if (autoPlay) { const t = setTimeout(() => setPlaying(true), 300); return () => clearTimeout(t); }
+    if (autoPlay) {
+      const el = audioRef.current;
+      if (!el) return;
+      // For blob: URLs, canplay fires instantly (data is in memory).
+      // For Supabase URLs, canplay fires once the browser has buffered enough.
+      // Either way we only call play() when the browser is actually ready.
+      if (el.readyState >= 3) { setPlaying(true); return; } // already buffered
+      const onReady = () => setPlaying(true);
+      el.addEventListener('canplay', onReady, { once: true });
+      const fallback = setTimeout(() => {
+        el.removeEventListener('canplay', onReady);
+        setPlaying(true); // try anyway after 5s — better than stuck forever
+      }, 5000);
+      return () => { el.removeEventListener('canplay', onReady); clearTimeout(fallback); };
+    }
   }, [song.id]);
 
   useEffect(() => {
@@ -1797,16 +1811,49 @@ export default function App() {
   // Persist whenever perfQueue changes
   useEffect(() => { savePerfQueue(perfQueue); }, [perfQueue]);
 
-  // Pre-warm CDN connection for the next song whenever it changes.
-  // A HEAD request establishes the Cloudflare connection so the actual media
-  // request flows immediately when the new PlayerScreen mounts.
-  // Trimmed to queue[0] only — abort-on-unmount now frees connections reliably,
-  // so speculative requests for queue[1] are no longer worth the extra connection.
+  // ── Blob pre-fetch for next queued song ─────────────────────────────────────
+  // Fetch the next song's audio files completely while the current song plays.
+  // Result is a blob: URL — local memory, no CDN involved during playback.
+  // This eliminates the connection-pool / Cloudflare issues that caused songs 3+
+  // to stall: by the time the song needs to play, the data is already here.
+  const blobCache = useRef({}); // { [songId]: 'loading' | { audioUrl, vocalsUrl } }
+
   useEffect(() => {
-    const hw = url => { if (url) fetch(url, { method: 'HEAD' }).catch(() => {}); };
-    hw(perfQueue[0]?.audioUrl);
-    hw(perfQueue[0]?.vocalsUrl);
+    const song = perfQueue[0];
+    if (!song?.audioUrl || blobCache.current[song.id]) return; // nothing to do
+
+    let active = true;
+    blobCache.current[song.id] = 'loading';
+
+    const toBlob = url => url
+      ? fetch(url)
+          .then(r => r.ok ? r.blob() : null)
+          .then(b => (b && active) ? URL.createObjectURL(b) : url)
+          .catch(() => url) // fall back to original URL on any network error
+      : Promise.resolve(url);
+
+    Promise.all([toBlob(song.audioUrl), toBlob(song.vocalsUrl)])
+      .then(([audioUrl, vocalsUrl]) => {
+        if (active) blobCache.current[song.id] = { audioUrl, vocalsUrl };
+      });
+
+    return () => { active = false; };
   }, [perfQueue[0]?.id ?? '']); // eslint-disable-line
+
+  // Revoke blob URLs for the previous song once it's no longer active
+  const prevActiveSongIdRef = useRef(null);
+  useEffect(() => {
+    const prevId = prevActiveSongIdRef.current;
+    if (prevId) {
+      const cached = blobCache.current[prevId];
+      if (cached && cached !== 'loading') {
+        if (cached.audioUrl?.startsWith('blob:'))  URL.revokeObjectURL(cached.audioUrl);
+        if (cached.vocalsUrl?.startsWith('blob:')) URL.revokeObjectURL(cached.vocalsUrl);
+      }
+      delete blobCache.current[prevId];
+    }
+    prevActiveSongIdRef.current = activeSong?.id ?? null;
+  }, [activeSong?.id ?? '']); // eslint-disable-line
 
   function perfQueueAddFront(song) { setPerfQueue(q => { const next = [song, ...q]; return next; }); }
   function perfQueueAddEnd(song)   { setPerfQueue(q => [...q, song]); }
@@ -1834,8 +1881,15 @@ export default function App() {
   function playFromPerfQueue() {
     if (perfQueue.length === 0) return;
     const next = perfQueue[0];
+    // Use pre-fetched blob URLs if ready — bypasses CDN entirely for playback.
+    // Falls back to direct Supabase URLs if blob isn't ready yet (first song, rapid skip).
+    const cached = blobCache.current[next.id];
+    const ready  = cached && cached !== 'loading';
+    const songToPlay = ready
+      ? { ...next, audioUrl: cached.audioUrl ?? next.audioUrl, vocalsUrl: cached.vocalsUrl ?? next.vocalsUrl }
+      : next;
     setPerfQueue(q => q.slice(1));
-    navigateToSong(next);
+    navigateToSong(songToPlay);
   }
 
   const shouldAutoPlayRef = useRef(false);
