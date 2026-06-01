@@ -522,10 +522,11 @@ const EDITOR_COLORS = [
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
 function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onStartRandom, onToggleFavourite }) {
-  const [q, setQ]           = useState('');
-  const [sortBy, setSortBy] = useState('date');    // 'date' | 'song' | 'artist'
-  const [sortDir, setSortDir] = useState('asc');   // 'asc' | 'desc' — only used for 'song' and 'artist'
+  const [q, setQ]             = useState('');
+  const [sortBy, setSortBy]   = useState('date');    // 'date' | 'song' | 'artist'
+  const [sortDir, setSortDir] = useState('asc');     // 'asc' | 'desc' — only used for 'song' and 'artist'
   const [favOnly, setFavOnly] = useState(false);
+  const [editMode, setEditMode] = useState(false);
 
   // Clicking a sort key: if already active, flip direction; otherwise activate it (asc)
   function handleSort(key) {
@@ -562,7 +563,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
     <div className="screen">
       <div className="page-header"><div><div className="page-title">KaraKlas</div><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 1 }}>Library · {songs.length} song{songs.length !== 1 ? 's' : ''}</div></div></div>
 
-      {/* Search + shuffle */}
+      {/* Search + shuffle + edit mode toggle */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 18px 10px' }}>
         <div className="search-wrap" style={{ flex: 1, margin: 0, padding: 0 }}>
           <i className="ti ti-search search-icon" aria-hidden="true" />
@@ -570,6 +571,15 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         </div>
         <button className="shuffle-btn" onClick={onStartRandom} disabled={songs.filter(s => s.hasAudio || s.audioUrl).length < 2} aria-label="Shuffle play" title="Shuffle — play random songs">
           <i className="ti ti-arrows-shuffle" aria-hidden="true" />
+        </button>
+        <button
+          className="shuffle-btn"
+          onClick={() => setEditMode(v => !v)}
+          aria-label={editMode ? 'Exit edit mode' : 'Edit songs'}
+          title={editMode ? 'Exit edit mode' : 'Edit songs'}
+          style={{ color: editMode ? 'var(--amber)' : undefined }}
+        >
+          <i className="ti ti-pencil" aria-hidden="true" />
         </button>
       </div>
 
@@ -686,7 +696,9 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
               >
                 <i className="ti ti-playlist-add" style={{ fontSize: 21 }} aria-hidden="true" />
               </button>
-              <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
+              {editMode && (
+                <button className="btn btn-ghost" style={{ padding: 7 }} onClick={e => { e.stopPropagation(); onEdit(song); }} aria-label="Edit"><i className="ti ti-edit" style={{ fontSize: 17, color: 'var(--muted)' }} aria-hidden="true" /></button>
+              )}
             </div>
           );
         })}
