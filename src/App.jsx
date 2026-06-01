@@ -13,6 +13,14 @@ function getAudioClock() {
   return _audioClock;
 }
 
+// Inject buffering bar animation once when the module loads
+if (typeof document !== 'undefined' && !document.querySelector('#kk-buffering-style')) {
+  const s = document.createElement('style');
+  s.id = 'kk-buffering-style';
+  s.textContent = '@keyframes kk-sweep{0%{left:-45%;width:45%}60%{left:60%;width:45%}100%{left:110%;width:45%}}';
+  document.head.appendChild(s);
+}
+
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const SUPA_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -947,6 +955,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
 
   const [isCinematic, setIsCinematic] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768);
   useEffect(() => { const check = () => setIsCinematic(window.innerWidth >= 768); window.addEventListener('resize', check); return () => window.removeEventListener('resize', check); }, []);
+  const [isBuffering, setIsBuffering] = useState(false);
 
   const clockAnchorRef = useRef(null); // { clockTime, audioTime } — set on every play/resume/seek
   const seekSafetyRef  = useRef(null); // timeout handle for seek watchdog
@@ -964,20 +973,26 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     setPlaying(false); setCurrentTime(0); setDuration(0); setActiveLine(-1);
     setGuideExpanded(false); setGuideVolume(settings?.defaultGuideVolume ?? 0); setPlayError(null);
     clockAnchorRef.current = null; // discard anchor — new song starts fresh
+    setIsBuffering(false);         // clear any leftover buffering state from previous song
     if (autoPlay) {
       const el = audioRef.current;
       if (!el) return;
-      // For blob: URLs, canplay fires instantly (data is in memory).
-      // For Supabase URLs, canplay fires once the browser has buffered enough.
-      // Either way we only call play() when the browser is actually ready.
-      if (el.readyState >= 3) { setPlaying(true); return; } // already buffered
-      const onReady = () => setPlaying(true);
+      // For blob: URLs readyState >= 3 immediately (data in memory) — no buffering shown.
+      // For Supabase URLs, wait for canplay and show the loading bar while waiting.
+      if (el.readyState >= 3) { setPlaying(true); return; }
+      setIsBuffering(true);
+      const onReady = () => { setIsBuffering(false); setPlaying(true); };
       el.addEventListener('canplay', onReady, { once: true });
       const fallback = setTimeout(() => {
         el.removeEventListener('canplay', onReady);
-        setPlaying(true); // try anyway after 5s — better than stuck forever
+        setIsBuffering(false);
+        setPlaying(true); // try anyway after 5s
       }, 5000);
-      return () => { el.removeEventListener('canplay', onReady); clearTimeout(fallback); };
+      return () => {
+        el.removeEventListener('canplay', onReady);
+        clearTimeout(fallback);
+        setIsBuffering(false);
+      };
     }
   }, [song.id]);
 
@@ -1289,6 +1304,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
   if (isCinematic) return (
     <div className="player-screen" style={{ display: 'flex', flexDirection: 'column', height: '100dvh' }}>
       {audioEls}{randomBand}
+      {/* Amber sweep bar — visible only while waiting for canplay */}
+      <div aria-hidden="true" style={{ height: isBuffering ? 2 : 0, overflow: 'hidden', background: 'rgba(255,255,255,0.06)', flexShrink: 0, position: 'relative', transition: 'height 0.15s' }}>
+        {isBuffering && <div style={{ position: 'absolute', top: 0, left: 0, height: '100%', background: '#F4A827', animation: 'kk-sweep 1.8s cubic-bezier(.4,0,.2,1) infinite' }} />}
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 28px', borderBottom: '0.5px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
         <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
         <p style={{ flex: 1, fontSize: 14, color: 'rgba(200,205,230,0.65)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.title}{song.artist ? ` — ${song.artist}` : ''}</p>
@@ -1305,7 +1324,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       {playError && (<div style={{ margin: '0 28px 8px', padding: '10px 14px', background: 'rgba(232,96,122,0.12)', border: '1px solid rgba(232,96,122,0.25)', borderRadius: 'var(--radius)', fontSize: 13, color: '#E8607A', lineHeight: 1.5 }}>{playError}</div>)}
       {lyricsArea}{nextUpCard}
       {guideExpanded && (<div className="cinematic-guide-panel"><i className="ti ti-microphone" style={{ fontSize: 18, color: guideVolume > 0 ? 'var(--amber)' : 'var(--muted)', flexShrink: 0 }} aria-hidden="true" /><input type="range" min="0" max="1" step="0.02" value={guideVolume} onChange={e => setGuideVolume(parseFloat(e.target.value))} className="guide-slider" aria-label="Guide vocals volume" /><span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}</span></div>)}
-      <div className="cinematic-bar">
+      <div className="cinematic-bar" style={{ opacity: isBuffering ? 0.35 : 1, transition: 'opacity 0.2s', pointerEvents: isBuffering ? 'none' : 'auto' }}>
         <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart"><i className="ti ti-player-skip-back" aria-hidden="true" /></button>
         {playBtn}
         <button className="ctrl-btn" onClick={handleSkip} aria-label={hasNext ? 'Next song' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
@@ -1322,6 +1341,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
   return (
     <div className="player-screen">
       {audioEls}{randomBand}
+      {/* Amber sweep bar — visible only while waiting for canplay */}
+      <div aria-hidden="true" style={{ height: isBuffering ? 2 : 0, overflow: 'hidden', background: 'rgba(255,255,255,0.06)', flexShrink: 0, position: 'relative', transition: 'height 0.15s' }}>
+        {isBuffering && <div style={{ position: 'absolute', top: 0, left: 0, height: '100%', background: '#F4A827', animation: 'kk-sweep 1.8s cubic-bezier(.4,0,.2,1) infinite' }} />}
+      </div>
       <div className="player-header">
         <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
         <div className="song-avatar" style={{ background: c.bg, color: c.fg, width: 44, height: 44, fontSize: 18 }}>{song.title[0]?.toUpperCase()}</div>
@@ -1343,7 +1366,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
         {guideExpanded && (<div className="guide-slider-wrap"><span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}</span><input type="range" min="0" max="1" step="0.02" value={guideVolume} onChange={e => setGuideVolume(parseFloat(e.target.value))} className="guide-slider" aria-label="Guide vocals volume" /></div>)}
       </div>
-      <div className="controls">
+      <div className="controls" style={{ opacity: isBuffering ? 0.35 : 1, transition: 'opacity 0.2s', pointerEvents: isBuffering ? 'none' : 'auto' }}>
         <button className="ctrl-btn" onClick={handleRestart} aria-label="Restart"><i className="ti ti-player-skip-back" aria-hidden="true" /></button>
         {playBtn}
         <button className="ctrl-btn" onClick={handleSkip} aria-label={hasNext ? 'Next song' : 'Skip 10s'}><i className="ti ti-player-skip-forward" aria-hidden="true" /></button>
