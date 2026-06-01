@@ -68,10 +68,15 @@ async function deleteSupabaseFile(publicUrl) {
   } catch (e) { console.warn('Could not delete file:', e.message); }
 }
 
+// ── Library namespace ─────────────────────────────────────────────────────────
+// All admin-owned songs live under library/admin/.
+// Future user uploads will go to library/users/<userId>/.
+const LIBRARY_ROOT = 'library/admin';
+
 async function saveSongData(song) {
   if (!supabase) return;
   const slug = makeSongSlug(song.title, song.artist);
-  const path = song._libraryPath || `library/${slug}_${song.id}.json`;
+  const path = song._libraryPath || `${LIBRARY_ROOT}/${slug}_${song.id}.json`;
   const stored = { ...song, _libraryPath: path };
   const blob = new Blob([JSON.stringify(stored)], { type: 'application/json' });
   const { error } = await supabase.storage.from('songs')
@@ -82,7 +87,7 @@ async function saveSongData(song) {
 
 async function archiveDeletedSong(song) {
   if (!supabase) return;
-  const libraryPath = song._libraryPath || `library/${song.id}.json`;
+  const libraryPath = song._libraryPath || `${LIBRARY_ROOT}/${song.id}.json`;
   const slug = makeSongSlug(song.title, song.artist);
   const deletedPath = `deleted/${slug}_${song.id}.json`;
   try {
@@ -134,11 +139,22 @@ async function purgeDeletedSongs() {
 async function loadLibrary() {
   if (!supabase) return [];
   try {
-    const { data: files, error } = await supabase.storage.from('songs').list('library');
-    if (error || !files?.length) return [];
+    // Read from library/admin (current) and legacy library/ root (pre-migration).
+    // Once migration is complete the legacy folder will be empty, so this is safe to keep.
+    const [adminFiles, legacyFiles] = await Promise.all([
+      supabase.storage.from('songs').list(LIBRARY_ROOT),
+      supabase.storage.from('songs').list('library'),
+    ]);
+    const adminNames  = new Set((adminFiles.data || []).map(f => f.name));
+    const allFiles = [
+      ...(adminFiles.data || []).filter(f => f.name.endsWith('.json')).map(f => ({ name: f.name, prefix: LIBRARY_ROOT })),
+      // Only include legacy root files that haven't already been migrated (not in admin)
+      ...(legacyFiles.data || []).filter(f => f.name.endsWith('.json') && !adminNames.has(f.name)).map(f => ({ name: f.name, prefix: 'library' })),
+    ];
+    if (!allFiles.length) return [];
     const songs = await Promise.all(
-      files.filter(f => f.name.endsWith('.json')).map(async f => {
-        const { data } = await supabase.storage.from('songs').download(`library/${f.name}`);
+      allFiles.map(async ({ name, prefix }) => {
+        const { data } = await supabase.storage.from('songs').download(`${prefix}/${name}`);
         if (!data) return null;
         try { return JSON.parse(await data.text()); } catch { return null; }
       })
@@ -155,7 +171,7 @@ async function restoreDeletedSongs(songs) {
   for (const song of songs) {
     const archivePath = song._deletedPath || `deleted/${song.id}.json`;
     const slug = makeSongSlug(song.title, song.artist);
-    const libraryPath = song._libraryPath || `library/${slug}_${song.id}.json`;
+    const libraryPath = song._libraryPath || `${LIBRARY_ROOT}/${slug}_${song.id}.json`;
     try {
       const { _deleted, _deletedAt, _deletedPath, ...clean } = song;
       const restoredSong = { ...clean, _libraryPath: libraryPath };
@@ -195,7 +211,51 @@ async function findOrphanedFiles() {
   } catch (e) { console.warn('findOrphanedFiles:', e.message); return []; }
 }
 
-// Queue persistence — completed/failed items survive page reloads for 24 h.
+// Migrates all song JSON files from the legacy flat library/ folder to library/admin/.
+// Each file is re-uploaded with an updated _libraryPath, then the old file is removed.
+// Returns { migrated, skipped, failed } counts.
+// Safe to run multiple times — files already in library/admin/ are skipped.
+async function migrateLibraryToAdmin(onProgress) {
+  if (!supabase) return { migrated: 0, skipped: 0, failed: 0 };
+  const { data: files, error } = await supabase.storage.from('songs').list('library');
+  if (error) throw new Error(`Could not list library/: ${error.message}`);
+
+  // Only flat JSON files — ignore the admin/ subfolder entry itself
+  const legacyFiles = (files || []).filter(f => f.name.endsWith('.json'));
+  if (!legacyFiles.length) return { migrated: 0, skipped: 0, failed: 0 };
+
+  let migrated = 0, skipped = 0, failed = 0;
+
+  for (const file of legacyFiles) {
+    const oldPath = `library/${file.name}`;
+    try {
+      const { data } = await supabase.storage.from('songs').download(oldPath);
+      if (!data) { failed++; continue; }
+      const song = JSON.parse(await data.text());
+
+      // Derive new path — reuse the same filename under library/admin/
+      const newPath = `${LIBRARY_ROOT}/${file.name}`;
+      const updatedSong = { ...song, _libraryPath: newPath };
+
+      // Upload to new location
+      const blob = new Blob([JSON.stringify(updatedSong)], { type: 'application/json' });
+      const { error: uploadErr } = await supabase.storage.from('songs')
+        .upload(newPath, blob, { upsert: true, contentType: 'application/json' });
+      if (uploadErr) { failed++; continue; }
+
+      // Remove from old location
+      await supabase.storage.from('songs').remove([oldPath]);
+      migrated++;
+      onProgress?.({ migrated, skipped, failed, total: legacyFiles.length, current: song.title });
+    } catch (e) {
+      console.warn('Migration failed for', file.name, e.message);
+      failed++;
+    }
+  }
+  return { migrated, skipped, failed };
+}
+
+const MIGRATION_KEY = 'karaklas_migration_v1_done';
 // Waiting/processing items are never persisted (they'd be stale on reload).
 const QUEUE_KEY = 'karaklas_queue_v1';
 function loadPersistedQueue() {
@@ -1589,6 +1649,69 @@ function OrphanedFilesPanel() {
   );
 }
 
+// ── LIBRARY MIGRATION PANEL ───────────────────────────────────────────────────
+// One-time migration from library/ to library/admin/.
+// Disappears once completed (tracked in localStorage).
+function LibraryMigrationPanel() {
+  const [done]       = useState(() => !!localStorage.getItem(MIGRATION_KEY));
+  const [status, setStatus] = useState('idle'); // 'idle' | 'running' | 'done' | 'error'
+  const [progress, setProgress] = useState(null); // { migrated, total, current }
+  const [result, setResult]     = useState(null);
+
+  if (done) return null;
+
+  async function handleMigrate() {
+    setStatus('running');
+    setProgress({ migrated: 0, total: '?', current: '…' });
+    try {
+      const res = await migrateLibraryToAdmin(p => setProgress(p));
+      setResult(res);
+      setStatus('done');
+      if (res.failed === 0) localStorage.setItem(MIGRATION_KEY, '1');
+    } catch (e) {
+      setResult({ error: e.message });
+      setStatus('error');
+    }
+  }
+
+  return (
+    <div className="card" style={{ borderColor: status === 'done' && result?.failed === 0 ? 'rgba(32,191,107,0.3)' : 'rgba(244,168,39,0.3)' }}>
+      <span className="card-label">Library migration</span>
+      {status === 'idle' && (
+        <>
+          <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px', lineHeight: 1.6 }}>
+            Moves your songs from <code style={{ fontSize: 11 }}>library/</code> to <code style={{ fontSize: 11 }}>library/admin/</code> to prepare for multi-user support. Run this once before adding more songs.
+          </p>
+          <button className="btn btn-primary" style={{ fontSize: 13 }} onClick={handleMigrate}>
+            <i className="ti ti-folder-arrow-right" aria-hidden="true" style={{ marginRight: 6 }} />
+            Migrate now
+          </button>
+        </>
+      )}
+      {status === 'running' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: 'var(--amber)' }}>
+          <i className="ti ti-loader spin" aria-hidden="true" />
+          {progress ? `Moving ${progress.migrated + 1} of ${progress.total === '?' ? '…' : progress.total} — ${progress.current}` : 'Starting…'}
+        </div>
+      )}
+      {status === 'done' && result && (
+        <div style={{ fontSize: 13, color: result.failed === 0 ? '#20BF6B' : 'var(--rose)' }}>
+          {result.failed === 0
+            ? <><i className="ti ti-check" aria-hidden="true" style={{ marginRight: 6 }} />Done — {result.migrated} song{result.migrated !== 1 ? 's' : ''} moved. This panel will not appear again.</>
+            : <><i className="ti ti-alert-triangle" aria-hidden="true" style={{ marginRight: 6 }} />{result.migrated} moved, {result.failed} failed. Check console for details and try again.</>
+          }
+        </div>
+      )}
+      {status === 'error' && (
+        <div style={{ fontSize: 13, color: 'var(--rose)' }}>
+          <i className="ti ti-alert-triangle" aria-hidden="true" style={{ marginRight: 6 }} />
+          Migration error: {result?.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
 function SettingsScreen({ settings, onSettingsChange, onRestoreSongs, songs, onAddSong, queue, queueRunning, onAddToQueue, onRemoveFromQueue, onStartQueue }) {
   const [settingsTab, setSettingsTab] = useState('songs');
@@ -1650,6 +1773,7 @@ function SettingsScreen({ settings, onSettingsChange, onRestoreSongs, songs, onA
           <div style={{ padding: '8px 18px 0', display: 'flex', flexDirection: 'column', gap: 14 }}>
             {!!(SUPA_URL && SUPA_KEY) && (
               <>
+                <LibraryMigrationPanel />
                 <div className="card">
                   <span className="card-label">Archived songs</span>
                   <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 12px', lineHeight: 1.6 }}>Songs deleted from the library. Audio files are kept until purged.</p>
@@ -1953,7 +2077,7 @@ export default function App() {
         if (result) {
           const slug = makeSongSlug(next.title, next.artist);
           const newId = uid();
-          const libraryPath = `library/${slug}_${newId}.json`;
+          const libraryPath = `${LIBRARY_ROOT}/${slug}_${newId}.json`;
           const song = { id: newId, title: next.title, artist: next.artist, addedAt: Date.now(), tags: [], _libraryPath: libraryPath, audioUrl: result.instrumentalUrl, vocalsUrl: result.vocalsUrl, hasAudio: !!result.instrumentalUrl, lyrics: result.lyrics, lyricsAlt: result.lyricsAlt, lyricsType: result.lyricsType, lyricsSource: 'primary', plainLyrics: '' };
           setSongs(prev => [song, ...prev]);
           const stored = await saveSongData(song);
