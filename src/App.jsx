@@ -1529,7 +1529,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         <div className="cinematic-progress" onClick={seek}><div className="cinematic-fill" style={{ width: `${pct}%` }} /></div>
         <span className="cinematic-time">{fmt(currentTime)} / {fmt(duration)}</span>
         {/* Sync + mic — paired audio-control actions */}
-        <button className="ctrl-btn" onClick={handleSync} aria-label="Sync" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-rotate-clockwise" aria-hidden="true" /></button>
+        <button className="sync-btn" onClick={handleSync} aria-label="Sync" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-rotate-clockwise" aria-hidden="true" /></button>
         <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
       </div>
       {hintLine}
@@ -1565,7 +1565,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       <div className="progress-wrap"><div className="progress-track" onClick={seek}><div className="progress-fill" style={{ width: `${pct}%` }} /></div><div className="time-row"><span>{fmt(currentTime)}</span><span>{fmt(duration)}</span></div></div>
       <div className="guide-panel">
         {/* Sync + mic — paired audio-control actions */}
-        <button className="ctrl-btn" onClick={handleSync} aria-label="Sync" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-rotate-clockwise" aria-hidden="true" /></button>
+        <button className="sync-btn" onClick={handleSync} aria-label="Sync" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-rotate-clockwise" aria-hidden="true" /></button>
         <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
         {guideExpanded && (<div className="guide-slider-wrap"><span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}</span><input type="range" min="0" max="1" step="0.02" value={guideVolume} onChange={e => setGuideVolume(parseFloat(e.target.value))} className="guide-slider" aria-label="Guide vocals volume" /></div>)}
       </div>
@@ -2277,7 +2277,7 @@ export default function App() {
             <i className="ti ti-list" aria-hidden="true" />
             <span>Queue</span>
             {perfQueue.length > 0 && (
-              <span style={{ position: 'absolute', top: 6, right: 6, background: 'var(--amber)', color: '#000', fontSize: 9, fontWeight: 800, lineHeight: 1, padding: '2px 4px', borderRadius: 8, minWidth: 14, textAlign: 'center' }}>
+              <span className="nav-badge" style={{ top: 6, right: 6 }}>
                 {perfQueue.length > 99 ? '99+' : perfQueue.length}
               </span>
             )}
@@ -2313,7 +2313,7 @@ export default function App() {
               <button className={`nav-btn${tab === 'queue' ? ' active' : ''}`} onClick={() => setTab('queue')} style={{ position: 'relative' }}>
                 <i className="ti ti-list" aria-hidden="true" /> Queue
                 {perfQueue.length > 0 && (
-                  <span style={{ position: 'absolute', top: 8, left: '50%', transform: 'translateX(16px)', background: 'var(--amber)', color: '#000', fontSize: 9, fontWeight: 800, lineHeight: 1, padding: '2px 4px', borderRadius: 8, minWidth: 14, textAlign: 'center' }}>
+                  <span className="nav-badge" style={{ top: 4, left: '50%', transform: 'translateX(14px)' }}>
                     {perfQueue.length > 99 ? '99+' : perfQueue.length}
                   </span>
                 )}

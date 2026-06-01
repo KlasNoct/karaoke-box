@@ -77,6 +77,21 @@ html, body, #root {
 .nav-btn i { font-size: 22px; }
 .nav-btn.active { color: var(--amber); }
 
+/* Queue count badge on nav tabs */
+.nav-badge {
+  position: absolute;
+  background: var(--amber);
+  color: #000;
+  font-family: system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 8px;
+  min-width: 16px;
+  text-align: center;
+}
+
 .fab {
   width: 54px; height: 54px; border-radius: 50%;
   background: var(--amber); border: none; cursor: pointer;
@@ -372,8 +387,8 @@ textarea { resize: vertical; line-height: 1.7; }
 
 /* ── Search bar ── */
 .search-wrap { padding: 0 18px 10px; }
-.search-wrap input { padding-left: 42px; }
-.search-wrap .search-icon { position: absolute; left: 30px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 18px; pointer-events: none; }
+.search-wrap input { padding-left: 38px; }
+.search-wrap .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 16px; pointer-events: none; }
 .search-wrap { position: relative; }
 
 /* ── Pin note ── */
@@ -641,6 +656,22 @@ textarea { resize: vertical; line-height: 1.7; }
 }
 .guide-toggle-btn.active { color: var(--amber); }
 .guide-toggle-btn i { font-size: 19px; }
+
+/* Sync button — matches guide-toggle-btn size and behaviour */
+.sync-btn {
+  display: flex;
+  align-items: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 6px 4px;
+  border-radius: 8px;
+  transition: color 0.15s;
+  flex-shrink: 0;
+}
+.sync-btn:hover { color: var(--text); }
+.sync-btn i { font-size: 19px; }
 
 .guide-slider-wrap {
   display: flex;
