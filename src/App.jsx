@@ -521,13 +521,37 @@ const EDITOR_COLORS = [
 
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
-function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onStartRandom }) {
-  const [q, setQ] = useState('');
-  const filtered = songs.filter(s => s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase()));
+function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onStartRandom, onToggleFavourite }) {
+  const [q, setQ]           = useState('');
+  const [sortBy, setSortBy] = useState('date');   // 'date' | 'title' | 'artist'
+  const [favOnly, setFavOnly] = useState(false);
+
+  const SORTS = [
+    { key: 'date',   label: 'Date added' },
+    { key: 'title',  label: 'A–Z' },
+    { key: 'artist', label: 'Artist' },
+  ];
+
+  const visible = songs
+    .filter(s => {
+      const matchQ = s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase());
+      const matchFav = !favOnly || (s.tags || []).includes('favourite');
+      return matchQ && matchFav;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'title')  return a.title.localeCompare(b.title);
+      if (sortBy === 'artist') return (a.artist || '').localeCompare(b.artist || '');
+      return (b.addedAt || 0) - (a.addedAt || 0); // 'date' — newest first
+    });
+
+  const favCount = songs.filter(s => (s.tags || []).includes('favourite')).length;
+
   return (
     <div className="screen">
       <div className="page-header"><div><div className="page-title">KaraKlas</div><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 1 }}>Library · {songs.length} song{songs.length !== 1 ? 's' : ''}</div></div></div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 18px 12px' }}>
+
+      {/* Search + shuffle */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 18px 10px' }}>
         <div className="search-wrap" style={{ flex: 1, margin: 0, padding: 0 }}>
           <i className="ti ti-search search-icon" aria-hidden="true" />
           <input placeholder="Search songs…" value={q} onChange={e => setQ(e.target.value)} />
@@ -536,13 +560,63 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
           <i className="ti ti-arrows-shuffle" aria-hidden="true" />
         </button>
       </div>
+
+      {/* Sort pills + favourites filter */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 18px 12px', overflowX: 'auto' }}>
+        {/* Star filter pill */}
+        <button
+          onClick={() => setFavOnly(v => !v)}
+          title={favOnly ? 'Show all songs' : 'Show favourites only'}
+          aria-label={favOnly ? 'Show all songs' : 'Show favourites only'}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 4,
+            padding: '4px 10px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
+            fontSize: 12, fontWeight: 600, fontFamily: 'var(--font-ui)',
+            transition: 'background 0.15s, color 0.15s',
+            background: favOnly ? 'rgba(244,168,39,0.18)' : 'var(--surface)',
+            border: favOnly ? '1px solid rgba(244,168,39,0.45)' : '1px solid var(--border)',
+            color: favOnly ? 'var(--amber)' : 'var(--muted)',
+          }}
+        >
+          <i className={`ti ${favOnly ? 'ti-star-filled' : 'ti-star'}`} style={{ fontSize: 13 }} aria-hidden="true" />
+          {favCount > 0 && <span>{favCount}</span>}
+        </button>
+
+        {/* Divider */}
+        <div style={{ width: 1, height: 18, background: 'var(--border)', flexShrink: 0 }} />
+
+        {/* Sort pills */}
+        {SORTS.map(s => (
+          <button
+            key={s.key}
+            onClick={() => setSortBy(s.key)}
+            style={{
+              padding: '4px 10px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
+              fontSize: 12, fontWeight: 600, fontFamily: 'var(--font-ui)',
+              transition: 'background 0.15s, color 0.15s',
+              background: sortBy === s.key ? 'var(--elevated)' : 'transparent',
+              border: sortBy === s.key ? '1px solid var(--border)' : '1px solid transparent',
+              color: sortBy === s.key ? 'var(--text)' : 'var(--muted)',
+            }}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Song list */}
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
-        {filtered.length === 0 && songs.length > 0 && (<p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>No results for "{q}"</p>)}
-        {filtered.map(song => {
+        {visible.length === 0 && songs.length > 0 && (
+          <p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>
+            {favOnly && !q ? 'No favourites yet — tap ♡ on any song.' : `No results for "${q}"`}
+          </p>
+        )}
+        {visible.map(song => {
           const activeLyrics = (song.lyricsSource === 'alt' && song.lyricsAlt?.length > 0) ? song.lyricsAlt : song.lyrics;
-          const hasWords = activeLyrics?.some(l => l.words?.length > 0);
-          const noAudio  = !song.hasAudio && !song.audioUrl;
+          const hasWords  = activeLyrics?.some(l => l.words?.length > 0);
+          const noAudio   = !song.hasAudio && !song.audioUrl;
+          const isFav     = (song.tags || []).includes('favourite');
           return (
             <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onAddToQueueFront(song)}>
               <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
@@ -554,11 +628,28 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
                 {hasWords && <span className="badge badge-teal badge-xs" title="Has word-level timing" style={{ padding: '1px 5px', fontSize: 10 }}>W</span>}
                 {song.tuned && <span className="badge badge-purple badge-xs" title="Tuned" style={{ padding: '1px 5px', fontSize: 10 }}>✓</span>}
               </div>
+              {/* Favourite heart */}
+              <button
+                onClick={e => { e.stopPropagation(); onToggleFavourite(song); }}
+                aria-label={isFav ? 'Remove from favourites' : 'Add to favourites'}
+                title={isFav ? 'Remove from favourites' : 'Add to favourites'}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: 7, marginLeft: 2, flexShrink: 0, background: 'none',
+                  border: 'none', cursor: 'pointer', borderRadius: 8, minHeight: 36,
+                  color: isFav ? 'var(--rose)' : 'var(--muted)',
+                  transition: 'color 0.15s',
+                }}
+                onMouseEnter={e => { if (!isFav) e.currentTarget.style.color = 'var(--text)'; }}
+                onMouseLeave={e => { if (!isFav) e.currentTarget.style.color = 'var(--muted)'; }}
+              >
+                <i className={`ti ${isFav ? 'ti-heart-filled' : 'ti-heart'}`} style={{ fontSize: 17 }} aria-hidden="true" />
+              </button>
               {/* Add to queue — primary amber chip */}
               <button
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  padding: '5px 9px', marginLeft: 4, flexShrink: 0,
+                  padding: '5px 9px', marginLeft: 2, flexShrink: 0,
                   background: 'rgba(244,168,39,0.13)',
                   border: '1px solid rgba(244,168,39,0.3)',
                   borderRadius: 8, cursor: 'pointer',
@@ -873,7 +964,7 @@ function AddSongScreen({ songs = [], onSave, onAddToQueue }) {
       id: uid(), title: title.trim(), artist: artist.trim(),
       audioUrl: instrFile ? URL.createObjectURL(instrFile) : null,
       vocalsUrl: null, hasAudio: !!instrFile,
-      lyrics: textLines, lyricsAlt: [],
+      lyrics: textLines, lyricsAlt: [], tags: [],
       lyricsType: textLines.length > 0 ? 'plain' : 'none',
       lyricsSource: 'primary', plainLyrics: lyricsText,
     });
@@ -1829,7 +1920,7 @@ export default function App() {
           const slug = makeSongSlug(next.title, next.artist);
           const newId = uid();
           const libraryPath = `library/${slug}_${newId}.json`;
-          const song = { id: newId, title: next.title, artist: next.artist, addedAt: Date.now(), _libraryPath: libraryPath, audioUrl: result.instrumentalUrl, vocalsUrl: result.vocalsUrl, hasAudio: !!result.instrumentalUrl, lyrics: result.lyrics, lyricsAlt: result.lyricsAlt, lyricsType: result.lyricsType, lyricsSource: 'primary', plainLyrics: '' };
+          const song = { id: newId, title: next.title, artist: next.artist, addedAt: Date.now(), tags: [], _libraryPath: libraryPath, audioUrl: result.instrumentalUrl, vocalsUrl: result.vocalsUrl, hasAudio: !!result.instrumentalUrl, lyrics: result.lyrics, lyricsAlt: result.lyricsAlt, lyricsType: result.lyricsType, lyricsSource: 'primary', plainLyrics: '' };
           setSongs(prev => [song, ...prev]);
           const stored = await saveSongData(song);
           if (stored) setSongs(prev => prev.map(x => x.id === song.id ? stored : x));
@@ -1957,6 +2048,14 @@ export default function App() {
   function handleRestoreSongs(restored) { setSongs(prev => { const ids = new Set(restored.map(s => s.id)); return [...restored, ...prev.filter(s => !ids.has(s.id))].sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)); }); }
   async function handleSaveEdited(s)   { setSongs(prev => prev.map(x => x.id === s.id ? { ...x, ...s } : x)); setEditingSong(null); await saveSongData(s); }
   async function handleDeleteSong(song) { setSongs(prev => prev.filter(s => s.id !== song.id)); await archiveDeletedSong(song); }
+  async function handleToggleFavourite(song) {
+    const tags = song.tags || [];
+    const isFav = tags.includes('favourite');
+    const newTags = isFav ? tags.filter(t => t !== 'favourite') : [...tags, 'favourite'];
+    const updated = { ...song, tags: newTags };
+    setSongs(prev => prev.map(s => s.id === song.id ? updated : s));
+    await saveSongData(updated);
+  }
 
   if (editingSong) return (
     <div className={`app-shell${isDesktop ? ' app-shell--wide' : ''}`}>
@@ -1985,7 +2084,7 @@ export default function App() {
 
   const playerProps   = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, nextQueuedSong: perfQueue[0] || null, hasNext: perfQueue.length > 0 || randomMode, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onReload: handleReloadSong, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
 
-  const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={setEditingSong} onStartRandom={startRandomMode} />;
+  const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={setEditingSong} onStartRandom={startRandomMode} onToggleFavourite={handleToggleFavourite} />;
   const settingsView = <SettingsScreen {...settingsProps} />;
   const queueView    = (
     <QueueScreen
