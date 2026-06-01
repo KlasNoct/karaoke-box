@@ -981,6 +981,21 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
     };
   }, [song.id]);
 
+  // Abort in-flight audio downloads when this song's component unmounts.
+  // Without this, partial downloads hold CDN connections open across song changes.
+  // After 2-3 skips the browser's per-domain connection pool fills up and new songs stall.
+  // el.src = '' + el.load() is the standard HTML5 pattern for aborting media fetches.
+  useEffect(() => {
+    return () => {
+      const abort = el => {
+        if (!el) return;
+        try { el.pause(); el.src = ''; el.load(); } catch {}
+      };
+      abort(audioRef.current);
+      abort(guideRef.current);
+    };
+  }, []); // [] = cleanup only runs on unmount, not on every render
+
   // Start guide vocals synced to wherever the instrumental currently is.
   // If guide isn't buffered yet, wait for canplay then seek to current position.
   // This prevents the ~3s late-start caused by a cold browser cache.
@@ -1782,15 +1797,16 @@ export default function App() {
   // Persist whenever perfQueue changes
   useEffect(() => { savePerfQueue(perfQueue); }, [perfQueue]);
 
-  // Pre-warm CDN connections for the next two songs whenever the queue front changes.
-  // HEAD requests are header-only (~0 bytes) — they establish the Cloudflare connection
-  // and warm the cache so media requests start immediately when the song loads.
-  // Covers both natural song-end advances and early skips.
+  // Pre-warm CDN connection for the next song whenever it changes.
+  // A HEAD request establishes the Cloudflare connection so the actual media
+  // request flows immediately when the new PlayerScreen mounts.
+  // Trimmed to queue[0] only — abort-on-unmount now frees connections reliably,
+  // so speculative requests for queue[1] are no longer worth the extra connection.
   useEffect(() => {
     const hw = url => { if (url) fetch(url, { method: 'HEAD' }).catch(() => {}); };
-    hw(perfQueue[0]?.audioUrl); hw(perfQueue[0]?.vocalsUrl);
-    hw(perfQueue[1]?.audioUrl); hw(perfQueue[1]?.vocalsUrl);
-  }, [`${perfQueue[0]?.id ?? ''}|${perfQueue[1]?.id ?? ''}`]); // eslint-disable-line
+    hw(perfQueue[0]?.audioUrl);
+    hw(perfQueue[0]?.vocalsUrl);
+  }, [perfQueue[0]?.id ?? '']); // eslint-disable-line
 
   function perfQueueAddFront(song) { setPerfQueue(q => { const next = [song, ...q]; return next; }); }
   function perfQueueAddEnd(song)   { setPerfQueue(q => [...q, song]); }
