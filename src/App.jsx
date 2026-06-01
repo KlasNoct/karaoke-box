@@ -523,28 +523,40 @@ const EDITOR_COLORS = [
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
 function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onStartRandom, onToggleFavourite }) {
   const [q, setQ]           = useState('');
-  const [sortBy, setSortBy] = useState('date');   // 'date' | 'title' | 'artist'
+  const [sortBy, setSortBy] = useState('date');    // 'date' | 'song' | 'artist'
+  const [sortDir, setSortDir] = useState('asc');   // 'asc' | 'desc' — only used for 'song' and 'artist'
   const [favOnly, setFavOnly] = useState(false);
+
+  // Clicking a sort key: if already active, flip direction; otherwise activate it (asc)
+  function handleSort(key) {
+    if (key === 'date') { setSortBy('date'); return; }
+    if (sortBy === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(key);
+      setSortDir('asc');
+    }
+  }
 
   const SORTS = [
     { key: 'date',   label: 'Date added' },
-    { key: 'title',  label: 'A–Z' },
+    { key: 'song',   label: 'Song' },
     { key: 'artist', label: 'Artist' },
   ];
 
   const visible = songs
     .filter(s => {
-      const matchQ = s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase());
+      const matchQ   = s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase());
       const matchFav = !favOnly || (s.tags || []).includes('favourite');
       return matchQ && matchFav;
     })
     .sort((a, b) => {
-      if (sortBy === 'title')  return a.title.localeCompare(b.title);
-      if (sortBy === 'artist') return (a.artist || '').localeCompare(b.artist || '');
-      return (b.addedAt || 0) - (a.addedAt || 0); // 'date' — newest first
+      let cmp = 0;
+      if (sortBy === 'song')   cmp = a.title.localeCompare(b.title);
+      if (sortBy === 'artist') cmp = (a.artist || '').localeCompare(b.artist || '');
+      if (sortBy === 'date')   return (b.addedAt || 0) - (a.addedAt || 0); // newest first, no flip
+      return sortDir === 'asc' ? cmp : -cmp;
     });
-
-  const favCount = songs.filter(s => (s.tags || []).includes('favourite')).length;
 
   return (
     <div className="screen">
@@ -561,7 +573,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         </button>
       </div>
 
-      {/* Sort pills + favourites filter */}
+      {/* Star filter + sort pills */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 18px 12px', overflowX: 'auto' }}>
         {/* Star filter pill */}
         <button
@@ -569,39 +581,49 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
           title={favOnly ? 'Show all songs' : 'Show favourites only'}
           aria-label={favOnly ? 'Show all songs' : 'Show favourites only'}
           style={{
-            display: 'flex', alignItems: 'center', gap: 4,
-            padding: '4px 10px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
-            fontSize: 12, fontWeight: 600, fontFamily: 'var(--font-ui)',
-            transition: 'background 0.15s, color 0.15s',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '4px 9px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
+            fontSize: 13, transition: 'background 0.15s, color 0.15s',
             background: favOnly ? 'rgba(244,168,39,0.18)' : 'var(--surface)',
             border: favOnly ? '1px solid rgba(244,168,39,0.45)' : '1px solid var(--border)',
             color: favOnly ? 'var(--amber)' : 'var(--muted)',
           }}
         >
-          <i className={`ti ${favOnly ? 'ti-star-filled' : 'ti-star'}`} style={{ fontSize: 13 }} aria-hidden="true" />
-          {favCount > 0 && <span>{favCount}</span>}
+          <i className={`ti ${favOnly ? 'ti-star-filled' : 'ti-star'}`} aria-hidden="true" />
         </button>
 
         {/* Divider */}
         <div style={{ width: 1, height: 18, background: 'var(--border)', flexShrink: 0 }} />
 
         {/* Sort pills */}
-        {SORTS.map(s => (
-          <button
-            key={s.key}
-            onClick={() => setSortBy(s.key)}
-            style={{
-              padding: '4px 10px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
-              fontSize: 12, fontWeight: 600, fontFamily: 'var(--font-ui)',
-              transition: 'background 0.15s, color 0.15s',
-              background: sortBy === s.key ? 'var(--elevated)' : 'transparent',
-              border: sortBy === s.key ? '1px solid var(--border)' : '1px solid transparent',
-              color: sortBy === s.key ? 'var(--text)' : 'var(--muted)',
-            }}
-          >
-            {s.label}
-          </button>
-        ))}
+        {SORTS.map(s => {
+          const active = sortBy === s.key;
+          const showDir = active && s.key !== 'date';
+          return (
+            <button
+              key={s.key}
+              onClick={() => handleSort(s.key)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 3,
+                padding: '4px 10px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
+                fontSize: 12, fontWeight: 600, fontFamily: 'var(--font-ui)',
+                transition: 'background 0.15s, color 0.15s',
+                background: active ? 'var(--elevated)' : 'transparent',
+                border: active ? '1px solid var(--border)' : '1px solid transparent',
+                color: active ? 'var(--text)' : 'var(--muted)',
+              }}
+            >
+              {s.label}
+              {showDir && (
+                <i
+                  className={`ti ${sortDir === 'asc' ? 'ti-chevron-up' : 'ti-chevron-down'}`}
+                  style={{ fontSize: 11 }}
+                  aria-hidden="true"
+                />
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* Song list */}
@@ -609,7 +631,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
         {visible.length === 0 && songs.length > 0 && (
           <p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>
-            {favOnly && !q ? 'No favourites yet — tap ♡ on any song.' : `No results for "${q}"`}
+            {favOnly && !q ? 'No favourites yet — tap ★ on any song.' : `No results for "${q}"`}
           </p>
         )}
         {visible.map(song => {
@@ -628,7 +650,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
                 {hasWords && <span className="badge badge-teal badge-xs" title="Has word-level timing" style={{ padding: '1px 5px', fontSize: 10 }}>W</span>}
                 {song.tuned && <span className="badge badge-purple badge-xs" title="Tuned" style={{ padding: '1px 5px', fontSize: 10 }}>✓</span>}
               </div>
-              {/* Favourite heart */}
+              {/* Favourite star */}
               <button
                 onClick={e => { e.stopPropagation(); onToggleFavourite(song); }}
                 aria-label={isFav ? 'Remove from favourites' : 'Add to favourites'}
@@ -637,13 +659,13 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   padding: 7, marginLeft: 2, flexShrink: 0, background: 'none',
                   border: 'none', cursor: 'pointer', borderRadius: 8, minHeight: 36,
-                  color: isFav ? 'var(--rose)' : 'var(--muted)',
+                  color: isFav ? 'var(--amber)' : 'var(--muted)',
                   transition: 'color 0.15s',
                 }}
                 onMouseEnter={e => { if (!isFav) e.currentTarget.style.color = 'var(--text)'; }}
                 onMouseLeave={e => { if (!isFav) e.currentTarget.style.color = 'var(--muted)'; }}
               >
-                <i className={`ti ${isFav ? 'ti-heart-filled' : 'ti-heart'}`} style={{ fontSize: 17 }} aria-hidden="true" />
+                <i className={`ti ${isFav ? 'ti-star-filled' : 'ti-star'}`} style={{ fontSize: 17 }} aria-hidden="true" />
               </button>
               {/* Add to queue — primary amber chip */}
               <button
