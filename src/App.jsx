@@ -475,7 +475,17 @@ function mergeWordsIntoLines(lrcLines, whisperOut) {
   return lrcLines.map((line, i) => {
     const lineStart = line.time;
     const lineEnd   = lrcLines[i + 1]?.time ?? Infinity;
-    const words     = allWords.filter(w => w.start >= lineStart - 0.4 && w.start < lineEnd);
+    // Shrink the upper bound by 0.25s so boundary words don't bleed into
+    // both the current line and the next (the 0.25s tolerance on the next
+    // line's lower bound would otherwise claim the same word twice).
+    const safeEnd   = lineEnd === Infinity ? Infinity : lineEnd - 0.25;
+    // Use LRClib text (proper case) for word labels rather than the raw
+    // WhisperX transcript (which is all lowercase). Positional mapping —
+    // falls back to WhisperX word if LRClib has fewer words at this index.
+    const textWords = line.text.split(/\s+/).filter(Boolean);
+    const words     = allWords
+      .filter(w => w.start >= lineStart - 0.25 && w.start < safeEnd)
+      .map((w, j) => ({ word: textWords[j] ?? w.word, start: w.start, end: w.end }));
     return { ...line, words, endTime: words[words.length - 1]?.end ?? line.endTime };
   });
 }
