@@ -1515,7 +1515,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         )}
         {/* Reload + cancel — matched pair, song management actions */}
         <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-          <button className="btn btn-ghost" style={{ padding: 7 }} onClick={reloadSong} aria-label="Reload song" title="Reload — restart if audio is stuck"><i className="ti ti-rotate-counter-clockwise" style={{ fontSize: 16, color: 'rgba(200,205,230,0.45)' }} aria-hidden="true" /></button>
+          <button className="btn btn-ghost" style={{ padding: 7 }} onClick={reloadSong} aria-label="Reload song" title="Reload — restart if audio is stuck"><i className="ti ti-rotate-2" style={{ fontSize: 16, color: 'rgba(200,205,230,0.45)' }} aria-hidden="true" /></button>
           <button className="btn btn-ghost" style={{ padding: 7 }} onClick={() => hasNext ? onSongEnd?.() : onBack?.()} aria-label="Cancel song" title="Cancel song"><i className="ti ti-x" style={{ fontSize: 16, color: 'rgba(200,205,230,0.45)' }} aria-hidden="true" /></button>
         </div>
       </div>
@@ -1556,7 +1556,7 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         )}
         {/* Reload + cancel — matched pair, song management actions */}
         <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-          <button className="btn btn-ghost" style={{ padding: 7 }} onClick={reloadSong} aria-label="Reload song" title="Reload — restart if audio is stuck"><i className="ti ti-rotate-counter-clockwise" style={{ fontSize: 16, color: 'var(--muted)' }} aria-hidden="true" /></button>
+          <button className="btn btn-ghost" style={{ padding: 7 }} onClick={reloadSong} aria-label="Reload song" title="Reload — restart if audio is stuck"><i className="ti ti-rotate-2" style={{ fontSize: 16, color: 'var(--muted)' }} aria-hidden="true" /></button>
           <button className="btn btn-ghost" style={{ padding: 7 }} onClick={() => hasNext ? onSongEnd?.() : onBack?.()} aria-label="Cancel song" title="Cancel song"><i className="ti ti-x" style={{ fontSize: 16, color: 'var(--muted)' }} aria-hidden="true" /></button>
         </div>
       </div>
@@ -2228,15 +2228,18 @@ export default function App() {
   function handleReloadSong() {
     const song = activeSong;
     if (!song) return;
+    // Look up the canonical song from the library to get original Supabase URLs.
+    // activeSong.audioUrl may be a revoked blob: URL if it was played from the pre-fetch
+    // cache — using the original URLs ensures the reload always works.
+    const canonical = songs.find(s => s.id === song.id) || song;
+    const reloadSong = { ...song, audioUrl: canonical.audioUrl, vocalsUrl: canonical.vocalsUrl };
     // Fire HEAD requests to establish fresh Cloudflare connections before remounting.
-    // By the time the new audio element makes its media request (~350ms later),
-    // the CDN cookie will be set and the connection warm.
-    if (song.audioUrl)  fetch(song.audioUrl,  { method: 'HEAD' }).catch(() => {});
-    if (song.vocalsUrl) fetch(song.vocalsUrl, { method: 'HEAD' }).catch(() => {});
+    if (canonical.audioUrl?.startsWith('http'))  fetch(canonical.audioUrl,  { method: 'HEAD' }).catch(() => {});
+    if (canonical.vocalsUrl?.startsWith('http')) fetch(canonical.vocalsUrl, { method: 'HEAD' }).catch(() => {});
     shouldAutoPlayRef.current = true;
     setTimeout(() => {
-      setActiveSong(null);                           // unmount PlayerScreen
-      setTimeout(() => setActiveSong(song), 80);    // remount with same song — full fresh state
+      setActiveSong(null);                                    // unmount PlayerScreen
+      setTimeout(() => setActiveSong(reloadSong), 80);       // remount with clean URLs
     }, 200); // 200ms head-start for CDN pre-warm
   }
 
