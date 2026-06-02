@@ -477,6 +477,7 @@ textarea { resize: vertical; line-height: 1.7; }
   transition: opacity 0.15s;
 }
 .editor-row:hover .editor-del-btn,
+.editor-row-active .editor-del-btn,
 .editor-del-btn:focus { opacity: 1; }
 /* Always visible on touch devices */
 @media (hover: none) { .editor-del-btn { opacity: 1; } }

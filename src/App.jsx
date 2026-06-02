@@ -778,6 +778,7 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
   const [activeIdx, setActiveIdx]     = useState(null);
   const [saving, setSaving]           = useState(false);
   const [tuned, setTuned]             = useState(song.tuned ?? false);
+  const [isDirty, setIsDirty]         = useState(false);
   // Word chip editing
   const [activeChipLine, setActiveChipLine] = useState(null);
   const [activeChipIdx,  setActiveChipIdx]  = useState(null);
@@ -792,6 +793,7 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
   }
   function commitChip(li, wi) {
     if (li === null || wi === null) return;
+    setIsDirty(true);
     setLines(prev => prev.map((line, i) => {
       if (i !== li) return line;
       const newWords = line.words.map((w, j) => j !== wi ? w : {
@@ -810,6 +812,7 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
     const newWord  = { word: 'word', start: s, end: s + 0.5 };
     const newWords = [...line.words, newWord];
     const newIdx   = newWords.length - 1;
+    setIsDirty(true);
     setLines(prev => prev.map((l, i) =>
       i !== li ? l : { ...l, words: newWords, text: newWords.map(w => w.word).join(' '), endTime: newWords[newWords.length - 1]?.end ?? l.endTime }
     ));
@@ -821,6 +824,7 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
     setDraftEnd(fmtWordTime(newWord.end));
   }
   function deleteWord(li, wi) {
+    setIsDirty(true);
     setLines(prev => prev.map((l, i) => {
       if (i !== li) return l;
       const newWords = l.words.filter((_, j) => j !== wi);
@@ -840,6 +844,7 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
       start: parseFloat((line.time + i * STEP).toFixed(3)),
       end:   parseFloat((line.time + i * STEP + WORD_DUR).toFixed(3)),
     }));
+    setIsDirty(true);
     setLines(prev => prev.map((l, i) => i !== lineIdx ? l : {
       ...l, words: newWords, endTime: newWords[newWords.length - 1]?.end,
     }));
@@ -861,9 +866,9 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
     setEditingAlt(useAlt); setLines(getSourceLines(useAlt)); setActiveIdx(null);
     setActiveChipLine(null); setActiveChipIdx(null);
   }
-  function updateLine(idx, field, value) { setLines(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l)); }
-  function deleteLine(idx, e) { e?.stopPropagation(); setLines(prev => prev.filter((_, i) => i !== idx)); setActiveIdx(prev => prev === null || prev < idx ? prev : prev === idx ? null : prev - 1); }
-  function addLine() { const t = lines[lines.length - 1]?.time || 0; setLines(prev => [...prev, { id: uid(), time: t + 3, text: '', color: null, words: [] }]); setActiveIdx(lines.length); }
+  function updateLine(idx, field, value) { setIsDirty(true); setLines(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l)); }
+  function deleteLine(idx, e) { e?.stopPropagation(); setIsDirty(true); setLines(prev => prev.filter((_, i) => i !== idx)); setActiveIdx(prev => prev === null || prev < idx ? prev : prev === idx ? null : prev - 1); }
+  function addLine() { setIsDirty(true); const t = lines[lines.length - 1]?.time || 0; setLines(prev => [...prev, { id: uid(), time: t + 3, text: '', color: null, words: [] }]); setActiveIdx(lines.length); }
 
   async function handleSave() {
     setSaving(true);
@@ -874,7 +879,13 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
     } else {
       await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none', lyricsSource: 'primary', tuned });
     }
+    setIsDirty(false);
     setSaving(false);
+  }
+
+  function handleBack() {
+    if (isDirty && !window.confirm('You have unsaved changes. Leave without saving?')) return;
+    onBack();
   }
 
   const sourceLabel = editingAlt ? 'WhisperX (backup)' : 'AI-corrected (primary)';
@@ -882,7 +893,7 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
   return (
     <div className="editor-shell">
       <div className="editor-header">
-        <button className="btn btn-ghost" style={{ padding: 8, flexShrink: 0 }} onClick={onBack}><i className="ti ti-arrow-left" style={{ fontSize: 20 }} aria-hidden="true" /></button>
+        <button className="btn btn-ghost" style={{ padding: 8, flexShrink: 0 }} onClick={handleBack}><i className="ti ti-arrow-left" style={{ fontSize: 20 }} aria-hidden="true" /></button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <p style={{ fontSize: 16, fontWeight: 800, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{localTitle || 'Edit song'}</p>
           <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{lines.length} lines · Editing: {sourceLabel}</p>
@@ -893,7 +904,7 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
             {tuned && <i className="ti ti-check" style={{ fontSize: 10, color: 'var(--amber)' }} aria-hidden="true" />}
           </div>
           <span style={{ fontSize: 12, color: tuned ? 'var(--amber)' : 'var(--muted)', whiteSpace: 'nowrap' }}>Tuned</span>
-          <input type="checkbox" checked={tuned} onChange={e => setTuned(e.target.checked)} style={{ display: 'none' }} />
+          <input type="checkbox" checked={tuned} onChange={e => { setIsDirty(true); setTuned(e.target.checked); }} style={{ display: 'none' }} />
         </label>
         <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ flexShrink: 0 }}>{saving ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Saving…</> : 'Save'}</button>
       </div>
@@ -908,8 +919,8 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
         {!editingAlt && (
           <div className="card" style={{ marginBottom: 8 }}>
             <span className="card-label">Song details</span>
-            <div className="field"><input value={localTitle} onChange={e => setLocalTitle(e.target.value)} placeholder="Song title" /></div>
-            <div className="field" style={{ marginBottom: 0 }}><input value={localArtist} onChange={e => setLocalArtist(e.target.value)} placeholder="Artist name" /></div>
+            <div className="field"><input value={localTitle} onChange={e => { setIsDirty(true); setLocalTitle(e.target.value); }} placeholder="Song title" /></div>
+            <div className="field" style={{ marginBottom: 0 }}><input value={localArtist} onChange={e => { setIsDirty(true); setLocalArtist(e.target.value); }} placeholder="Artist name" /></div>
           </div>
         )}
 
