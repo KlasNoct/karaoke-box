@@ -581,7 +581,7 @@ const EDITOR_COLORS = [
 
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
-function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onStartRandom, onToggleFavourite }) {
+function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onStartRandom, onToggleFavourite, showHidden }) {
   const [q, setQ]             = useState('');
   const [sortBy, setSortBy]   = useState('date');    // 'date' | 'song' | 'artist'
   const [sortDir, setSortDir] = useState('asc');     // 'asc' | 'desc' — only used for 'song' and 'artist'
@@ -609,7 +609,8 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
     .filter(s => {
       const matchQ   = s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase());
       const matchFav = !favOnly || (s.tags || []).includes('favourite');
-      return matchQ && matchFav;
+      const matchHidden = showHidden || !s.hidden;
+      return matchQ && matchFav && matchHidden;
     })
     .sort((a, b) => {
       let cmp = 0;
@@ -709,6 +710,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
           const hasWords  = activeLyrics?.some(l => l.words?.length > 0);
           const noAudio   = !song.hasAudio && !song.audioUrl;
           const isFav     = (song.tags || []).includes('favourite');
+          const isHidden  = !!song.hidden;
           return (
             <div key={song.id} className="song-card" style={{ gap: 0 }} onClick={() => onAddToQueueFront(song)}>
               <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
@@ -717,6 +719,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, flexShrink: 0 }}>
                 {noAudio && <span className="badge badge-amber badge-xs">No audio</span>}
+                {isHidden && <span className="badge badge-muted badge-xs" title="Hidden from library"><i className="ti ti-eye-off" style={{ fontSize: 9 }} /></span>}
                 {hasWords && <span className="badge badge-teal badge-xs" title="Has word-level timing" style={{ padding: '1px 5px', fontSize: 10 }}>W</span>}
                 {song.tuned && <span className="badge badge-purple badge-xs" title="Tuned" style={{ padding: '1px 5px', fontSize: 10 }}>✓</span>}
               </div>
@@ -779,6 +782,7 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
   const [saving, setSaving]           = useState(false);
   const [tuned, setTuned]             = useState(song.tuned ?? false);
   const [isDirty, setIsDirty]         = useState(false);
+  const [hidden,  setHidden]          = useState(song.hidden ?? false);
   // Word chip editing
   const [activeChipLine, setActiveChipLine] = useState(null);
   const [activeChipIdx,  setActiveChipIdx]  = useState(null);
@@ -856,7 +860,17 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
     setDraftEnd(fmtWordTime(newWords[0].end));
   }
 
-  function getSourceLines(useAlt) {
+  function stripWords(lineIdx) {
+    // Remove word chips from a line, keeping its text and start timestamp.
+    // The line becomes a plain timestamped line again — editable in the normal way.
+    if (!window.confirm('Remove word chips from this line? The text and start time will be kept.')) return;
+    setIsDirty(true);
+    setLines(prev => prev.map((l, i) => i !== lineIdx ? l : {
+      ...l, words: [], endTime: l.endTime ?? null,
+    }));
+    setActiveChipLine(null);
+    setActiveChipIdx(null);
+  }
     const src = useAlt ? (song.lyricsAlt || []) : (song.lyrics || []);
     return src.map(l => ({ id: uid(), color: null, words: [], ...l }));
   }
@@ -875,9 +889,9 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
     commitChip(activeChipLine, activeChipIdx);
     const sorted = [...lines].sort((a, b) => a.time - b.time);
     if (editingAlt) {
-      await onSave({ ...song, lyricsAlt: sorted, lyricsSource: 'alt', tuned });
+      await onSave({ ...song, lyricsAlt: sorted, lyricsSource: 'alt', tuned, hidden });
     } else {
-      await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none', lyricsSource: 'primary', tuned });
+      await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none', lyricsSource: 'primary', tuned, hidden });
     }
     setIsDirty(false);
     setSaving(false);
@@ -905,6 +919,13 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
           </div>
           <span style={{ fontSize: 12, color: tuned ? 'var(--amber)' : 'var(--muted)', whiteSpace: 'nowrap' }}>Tuned</span>
           <input type="checkbox" checked={tuned} onChange={e => { setIsDirty(true); setTuned(e.target.checked); }} style={{ display: 'none' }} />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', flexShrink: 0, padding: '0 4px' }}>
+          <div style={{ width: 16, height: 16, borderRadius: 3, border: `1.5px solid ${hidden ? 'var(--muted)' : 'var(--border)'}`, background: hidden ? 'rgba(255,255,255,0.07)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s', flexShrink: 0 }}>
+            {hidden && <i className="ti ti-check" style={{ fontSize: 10, color: 'var(--muted)' }} aria-hidden="true" />}
+          </div>
+          <span style={{ fontSize: 12, color: hidden ? 'var(--text)' : 'var(--muted)', whiteSpace: 'nowrap' }}>Hidden</span>
+          <input type="checkbox" checked={hidden} onChange={e => { setIsDirty(true); setHidden(e.target.checked); }} style={{ display: 'none' }} />
         </label>
         <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ flexShrink: 0 }}>{saving ? <><i className="ti ti-loader spin" style={{ fontSize: 13 }} aria-hidden="true" /> Saving…</> : 'Save'}</button>
       </div>
@@ -950,9 +971,12 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
               <div className="editor-swatches">
                 {EDITOR_COLORS.map(c => { const isSel = line.color === c.hex || (line.color === null && c.hex === '#F4A827'); return (<div key={c.hex} className={`editor-swatch${isSel ? ' editor-swatch--sel' : ''}`} style={{ background: c.hex, '--sw': c.hex }} title={c.name} onClick={e => { e.stopPropagation(); updateLine(idx, 'color', line.color === c.hex ? null : c.hex); }} />); })}
                 <span className="editor-color-name">{line.color ? (EDITOR_COLORS.find(c => c.hex === line.color)?.name || '') : 'Amber (default)'}</span>
-                <div style={{ marginLeft: 'auto', flexShrink: 0 }}>
+                <div style={{ marginLeft: 'auto', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
                   {lineHasWords
-                    ? <span className="word-w-badge" title="Has word timing">W</span>
+                    ? <>
+                        <button className="word-w-badge-amber" onClick={e => { e.stopPropagation(); stripWords(idx); }} title="Remove word chips — keep text and start time" style={{ fontSize: 10, padding: '2px 5px' }}>×W</button>
+                        <span className="word-w-badge" title="Has word timing">W</span>
+                      </>
                     : <button className="word-w-badge-amber" onClick={e => { e.stopPropagation(); convertToWords(idx); }} title="Convert to word chips">W</button>
                   }
                 </div>
@@ -1463,10 +1487,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         const breakCountdown = inBreak ? Math.max(0, Math.ceil(timeToNext)) : 0;
         const showIntro      = activeLine < 0 && lyrics.length > 0 && lyrics[0].time > 15 && currentTime < lyrics[0].time;
         const introCountdown = showIntro ? Math.max(0, Math.ceil(lyrics[0].time - currentTime)) : 0;
-        const classMap      = { '-2':'past','-1':'past','0':'active','1':'next1','2':'next2' };
+        const classMap      = { '-1':'past','0':'active','1':'next1','2':'next2' };
         return (
           <>
-            {[-2,-1,0].map(off => {
+            {[-1,0].map(off => {
               const line      = lyrics[activeLine + off];
               const isCur     = off === 0;
               const lineColor = line?.color || 'var(--amber)';
@@ -1814,6 +1838,19 @@ function SettingsScreen({ settings, onSettingsChange, onRestoreSongs, songs, onA
           </div>
           <div className="card"><span className="card-label">Guide vocals — default level</span><div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><i className="ti ti-microphone" style={{ fontSize: 18, color: settings.defaultGuideVolume > 0 ? 'var(--amber)' : 'var(--muted)' }} aria-hidden="true" /><input type="range" min="0" max="1" step="0.05" value={settings.defaultGuideVolume ?? 0} onChange={e => onSettingsChange({ defaultGuideVolume: parseFloat(e.target.value) })} style={{ flex: 1 }} /><span style={{ fontSize: 13, color: 'var(--muted)', minWidth: 34, textAlign: 'right' }}>{settings.defaultGuideVolume > 0 ? `${Math.round((settings.defaultGuideVolume ?? 0) * 100)}%` : 'Off'}</span></div></div>
           <div className="card"><span className="card-label">After a song finishes</span><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>{[{ value: false, label: 'Stop playing', sub: 'Player pauses at the end (default)' }, { value: true, label: 'Play next random song', sub: 'Picks a random song automatically' }].map(opt => (<label key={String(opt.value)} style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '4px 0' }}><div style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '2px solid', borderColor: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'var(--border)', background: (settings.autoPlayRandom ?? false) === opt.value ? 'var(--amber)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{(settings.autoPlayRandom ?? false) === opt.value && <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--bg)' }} />}</div><div><p style={{ fontSize: 14, margin: 0 }}>{opt.label}</p><p style={{ fontSize: 11, color: 'var(--muted)', margin: '1px 0 0' }}>{opt.sub}</p></div><input type="radio" style={{ display: 'none' }} checked={(settings.autoPlayRandom ?? false) === opt.value} onChange={() => onSettingsChange({ autoPlayRandom: opt.value })} /></label>))}</div></div>
+          <div className="card">
+            <span className="card-label">Library</span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '2px 0' }}>
+              <div style={{ width: 18, height: 18, borderRadius: 3, border: `1.5px solid ${settings.showHidden ? 'var(--amber)' : 'var(--border)'}`, background: settings.showHidden ? 'rgba(244,168,39,0.12)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s', flexShrink: 0 }}>
+                {settings.showHidden && <i className="ti ti-check" style={{ fontSize: 11, color: 'var(--amber)' }} aria-hidden="true" />}
+              </div>
+              <div>
+                <p style={{ fontSize: 14, margin: 0 }}>Show hidden songs</p>
+                <p style={{ fontSize: 11, color: 'var(--muted)', margin: '1px 0 0' }}>Hidden songs are visible but marked — toggle off to hide them from the library</p>
+              </div>
+              <input type="checkbox" checked={settings.showHidden ?? false} onChange={e => onSettingsChange({ showHidden: e.target.checked })} style={{ display: 'none' }} />
+            </label>
+          </div>
           <div className="card"><span className="card-label">Keyboard shortcuts</span><div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 13 }}>{[['Space','Play / pause'],['Esc','Close player'],['←','Restart (or prev song if within 2s)'],['→','Skip +10s (or next random)'],['M','Toggle guide vocals mute'],['R','Toggle random mode'],['F','Fullscreen']].map(([k,v]) => (<><span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span><span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span></>))}</div></div>
           <div className="success-box"><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Processing — server-side</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Vocal separation, transcription, and AI lyrics correction run via <code>/api/</code> endpoints. Keys in Vercel env vars.</p></div>
         </div>
@@ -2037,7 +2074,7 @@ export default function App() {
   const [loading, setLoading]       = useState(true);
   const [randomMode, setRandomMode] = useState(false);
   const [nextUpSong, setNextUpSong] = useState(null);
-  const [settings, setSettings]     = useState(() => ({ defaultGuideVolume: 0, autoPlayRandom: false, masterVolume: 1, ...loadSettings() }));
+  const [settings, setSettings]     = useState(() => ({ defaultGuideVolume: 0, autoPlayRandom: false, masterVolume: 1, showHidden: false, ...loadSettings() }));
   const [isDesktop, setIsDesktop]   = useState(() => window.innerWidth >= 900);
 
   // ── Processing queue ────────────────────────────────────────────────────
@@ -2256,7 +2293,7 @@ export default function App() {
 
   const playerProps   = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, nextQueuedSong: perfQueue[0] || null, hasNext: perfQueue.length > 0 || randomMode, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onReload: handleReloadSong, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
 
-  const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={setEditingSong} onStartRandom={startRandomMode} onToggleFavourite={handleToggleFavourite} />;
+  const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={setEditingSong} onStartRandom={startRandomMode} onToggleFavourite={handleToggleFavourite} showHidden={settings.showHidden ?? false} />;
   const settingsView = <SettingsScreen {...settingsProps} />;
   const queueView    = (
     <QueueScreen
