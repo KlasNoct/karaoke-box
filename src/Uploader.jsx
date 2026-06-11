@@ -233,19 +233,63 @@ async function callClaudeCorrection(whisperOut, lrcLines) {
   } catch { return null; }
 }
 
-// ── ID3 tag reader (uses music-metadata-browser) ──────────────────────────────
+// ── ID3v2 tag reader (no dependencies — hand-rolled binary parser) ────────────
+// Reads TIT2 (title) and TPE1 (artist) from the first ~64 KB of the MP3 file.
+// Handles ID3v2.3 and v2.4 (the two versions Sidify writes). Falls back to
+// filename if the header is absent or the tags are missing.
 async function readID3Tags(file) {
+  const fallback = () => ({ title: file.name.replace(/\.[^.]+$/, ''), artist: '' });
   try {
-    const { parseBlob } = await import('music-metadata-browser');
-    const meta = await parseBlob(file, { skipCovers: true });
-    return {
-      title:  meta.common?.title  || '',
-      artist: meta.common?.artist || meta.common?.albumartist || '',
-    };
+    // Read only the first 64 KB — enough for all practical ID3 headers
+    const buf  = await file.slice(0, 65536).arrayBuffer();
+    const view = new DataView(buf);
+    const u8   = new Uint8Array(buf);
+
+    // ID3v2 header: "ID3" magic + version byte (3 or 4) + flags + 4-byte syncsafe size
+    if (u8[0] !== 0x49 || u8[1] !== 0x44 || u8[2] !== 0x33) return fallback();
+
+    // Syncsafe integer decode (each byte uses only 7 bits)
+    const syncsafe = (a, b, c, d) => (a << 21) | (b << 14) | (c << 7) | d;
+    const tagSize  = syncsafe(u8[6], u8[7], u8[8], u8[9]);
+    const end      = Math.min(10 + tagSize, u8.length);
+
+    // Decode a text frame: skip encoding byte, decode remaining as UTF-8 or UTF-16
+    function readTextFrame(offset, size) {
+      if (size < 2) return '';
+      const enc  = u8[offset];
+      const data = u8.slice(offset + 1, offset + size);
+      if (enc === 1 || enc === 2) {
+        // UTF-16 with or without BOM
+        const hasBom = data[0] === 0xFF && data[1] === 0xFE;
+        const little = hasBom ? true : !(data[0] === 0xFE && data[1] === 0xFF);
+        const start  = (data[0] === 0xFF || data[0] === 0xFE) ? 2 : 0;
+        let str = '';
+        for (let i = start; i + 1 < data.length; i += 2) {
+          const cp = little ? (data[i] | (data[i + 1] << 8)) : ((data[i] << 8) | data[i + 1]);
+          if (cp === 0) break;
+          str += String.fromCodePoint(cp);
+        }
+        return str.trim();
+      }
+      // enc 0 = Latin-1, enc 3 = UTF-8
+      return new TextDecoder(enc === 3 ? 'utf-8' : 'latin1').decode(data).replace(/\0/g, '').trim();
+    }
+
+    let title = '', artist = '';
+    let pos = 10;
+
+    while (pos + 10 < end && (title === '' || artist === '')) {
+      const frameId   = String.fromCharCode(u8[pos], u8[pos+1], u8[pos+2], u8[pos+3]);
+      const frameSize = syncsafe(u8[pos+4], u8[pos+5], u8[pos+6], u8[pos+7]);
+      if (frameSize <= 0 || frameSize > end - pos - 10) break;
+      if (frameId === 'TIT2') title  = readTextFrame(pos + 10, frameSize);
+      if (frameId === 'TPE1') artist = readTextFrame(pos + 10, frameSize);
+      pos += 10 + frameSize;
+    }
+
+    return { title, artist };
   } catch {
-    // Strip extension and use filename as fallback
-    const name = file.name.replace(/\.[^.]+$/, '');
-    return { title: name, artist: '' };
+    return fallback();
   }
 }
 
