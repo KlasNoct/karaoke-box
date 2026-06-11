@@ -247,11 +247,17 @@ async function readID3Tags(file) {
 
     // ID3v2 header: "ID3" magic + version byte (3 or 4) + flags + 4-byte syncsafe size
     if (u8[0] !== 0x49 || u8[1] !== 0x44 || u8[2] !== 0x33) return fallback();
+    const version = u8[3]; // 3 = ID3v2.3, 4 = ID3v2.4
 
-    // Syncsafe integer decode (each byte uses only 7 bits)
-    const syncsafe = (a, b, c, d) => (a << 21) | (b << 14) | (c << 7) | d;
-    const tagSize  = syncsafe(u8[6], u8[7], u8[8], u8[9]);
-    const end      = Math.min(10 + tagSize, u8.length);
+    // Tag header size is always syncsafe regardless of version
+    const syncsafe    = (a, b, c, d) => (a << 21) | (b << 14) | (c << 7) | d;
+    const tagSize     = syncsafe(u8[6], u8[7], u8[8], u8[9]);
+    const end         = Math.min(10 + tagSize, u8.length);
+
+    // Frame sizes: plain 32-bit big-endian in v2.3, syncsafe in v2.4
+    const readFrameSize = version >= 4
+      ? (a, b, c, d) => syncsafe(a, b, c, d)
+      : (a, b, c, d) => (a << 24) | (b << 16) | (c << 8) | d;
 
     // Decode a text frame: skip encoding byte, decode remaining as UTF-8 or UTF-16
     function readTextFrame(offset, size) {
@@ -279,12 +285,12 @@ async function readID3Tags(file) {
     let pos = 10;
 
     while (pos + 10 < end && (title === '' || artist === '')) {
-      const frameId   = String.fromCharCode(u8[pos], u8[pos+1], u8[pos+2], u8[pos+3]);
-      const frameSize = syncsafe(u8[pos+4], u8[pos+5], u8[pos+6], u8[pos+7]);
-      if (frameSize <= 0 || frameSize > end - pos - 10) break;
-      if (frameId === 'TIT2') title  = readTextFrame(pos + 10, frameSize);
-      if (frameId === 'TPE1') artist = readTextFrame(pos + 10, frameSize);
-      pos += 10 + frameSize;
+      const frameId = String.fromCharCode(u8[pos], u8[pos+1], u8[pos+2], u8[pos+3]);
+      const fSize   = readFrameSize(u8[pos+4], u8[pos+5], u8[pos+6], u8[pos+7]);
+      if (fSize <= 0 || fSize > end - pos - 10) break;
+      if (frameId === 'TIT2') title  = readTextFrame(pos + 10, fSize);
+      if (frameId === 'TPE1') artist = readTextFrame(pos + 10, fSize);
+      pos += 10 + fSize;
     }
 
     return { title, artist };
