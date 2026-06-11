@@ -240,13 +240,27 @@ async function callClaudeCorrection(whisperOut, lrcLines) {
 async function readID3Tags(file) {
   const fallback = () => ({ title: file.name.replace(/\.[^.]+$/, ''), artist: '' });
   try {
-    // Read only the first 64 KB — enough for all practical ID3 headers
-    const buf  = await file.slice(0, 65536).arrayBuffer();
-    const view = new DataView(buf);
-    const u8   = new Uint8Array(buf);
+    // Read first 64 KB (ID3v2) and last 128 bytes (ID3v1) in parallel
+    const [headBuf, tailBuf] = await Promise.all([
+      file.slice(0, 65536).arrayBuffer(),
+      file.slice(-128).arrayBuffer(),
+    ]);
+    const u8   = new Uint8Array(headBuf);
+    const tail = new Uint8Array(tailBuf);
+
+    // ── ID3v1 fallback reader (used if no ID3v2 found) ──
+    function readID3v1() {
+      // ID3v1: last 128 bytes, starts with "TAG"
+      if (tail[0] !== 0x54 || tail[1] !== 0x41 || tail[2] !== 0x47) return null;
+      const dec = (start, len) =>
+        new TextDecoder('latin1').decode(tail.slice(start, start + len)).replace(/\0/g, '').trim();
+      return { title: dec(3, 30), artist: dec(33, 30) };
+    }
 
     // ID3v2 header: "ID3" magic + version byte (3 or 4) + flags + 4-byte syncsafe size
-    if (u8[0] !== 0x49 || u8[1] !== 0x44 || u8[2] !== 0x33) return fallback();
+    if (u8[0] !== 0x49 || u8[1] !== 0x44 || u8[2] !== 0x33) {
+      return readID3v1() || fallback();
+    }
     const version = u8[3]; // 3 = ID3v2.3, 4 = ID3v2.4
 
     // Tag header size is always syncsafe regardless of version
@@ -293,6 +307,8 @@ async function readID3Tags(file) {
       pos += 10 + fSize;
     }
 
+    // If ID3v2 frames yielded nothing, try ID3v1 before falling back to filename
+    if (!title && !artist) return readID3v1() || fallback();
     return { title, artist };
   } catch {
     return fallback();
