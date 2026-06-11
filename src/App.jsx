@@ -871,6 +871,8 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
     setActiveChipLine(null);
     setActiveChipIdx(null);
   }
+
+  function getSourceLines(useAlt) {
     const src = useAlt ? (song.lyricsAlt || []) : (song.lyrics || []);
     return src.map(l => ({ id: uid(), color: null, words: [], ...l }));
   }
