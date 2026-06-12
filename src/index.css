@@ -1,5 +1,5 @@
 /* Nordic Vinyl — dark karaoke aesthetic */
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Lora:ital,wght@0,400;0,500;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Lora:ital,wght@0,400;0,500;0,700;1,400&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -14,7 +14,7 @@
   --text:      #EDE9E0;
   --muted:     #5B6280;
   --radius:    14px;
-  --font-ui:   'Syne', sans-serif;
+  --font-ui:   'Plus Jakarta Sans', sans-serif;
   --font-lyric:'Lora', serif;
 }
 
