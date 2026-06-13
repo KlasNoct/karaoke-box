@@ -2349,7 +2349,7 @@ export default function App() {
       <main className="app-main">
         {activeSong
           ? <PlayerScreen key={activeSong.id} {...playerProps} />
-          : <div className="desktop-empty" style={{ opacity: 1 }}><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: 'min(900px, 80%)', maxHeight: '40vh', height: 'auto', objectFit: 'contain' }} /><p style={{ opacity: 0.4 }}>Select a song to start</p></div>
+          : <div className="desktop-empty" style={{ opacity: 1 }}><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: 'min(900px, 80%)', height: 'auto', objectFit: 'contain' }} /><p style={{ opacity: 0.4 }}>Select a song to start</p></div>
         }
       </main>
     </div>
