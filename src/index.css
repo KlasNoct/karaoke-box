@@ -268,7 +268,7 @@ textarea { resize: vertical; line-height: 1.7; }
   transition: all 0.32s ease;
   line-height: 1.45;
 }
-.lyric-line.past   { font-size: 13px; color: var(--muted); opacity: 0.35; padding: 5px 0; font-style: italic; }
+.lyric-line.past   { font-size: 26px; color: var(--muted); opacity: 0.35; padding: 5px 0; font-style: italic; }
 .lyric-line.next1  { font-size: 20px; color: var(--muted); opacity: 0.45; padding: 6px 0; }
 .lyric-line.next2  { font-size: 13px; color: var(--muted); opacity: 0.25; padding: 5px 0; }
 .lyric-line.active {

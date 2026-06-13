@@ -1489,6 +1489,12 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         const breakCountdown = inBreak ? Math.max(0, Math.ceil(timeToNext)) : 0;
         const showIntro      = activeLine < 0 && lyrics.length > 0 && lyrics[0].time > 15 && currentTime < lyrics[0].time;
         const introCountdown = showIntro ? Math.max(0, Math.ceil(lyrics[0].time - currentTime)) : 0;
+        const lastLyricLine  = lyrics[lyrics.length - 1];
+        const songDuration   = audioRef.current?.duration || 0;
+        const pastLastLyric  = activeLine >= lyrics.length - 1 && lastLyricLine && currentTime > (lastLyricLine.endTime ?? lastLyricLine.time);
+        const outroRemaining = songDuration > 0 ? songDuration - currentTime : 0;
+        const showOutro      = pastLastLyric && outroRemaining > 15;
+        const outroCountdown = showOutro ? Math.max(0, Math.ceil(outroRemaining)) : 0;
         const classMap      = { '-1':'past','0':'active','1':'next1','2':'next2' };
         return (
           <>
@@ -1501,12 +1507,14 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
                 ? (showIntro ? null : renderActiveLine(line))   // null = handled by intro pill above
                 : (line ? line.text : '\u00A0');
               if (isCur && showIntro) return <div key={off} className="lyric-line past">{'\u00A0'}</div>;
-              return (<div key={off} className={`lyric-line ${cls}`} style={(isCur && !inBreak && !showIntro) ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{content ?? '\u00A0'}</div>);
+              if (isCur && showOutro)  return <div key={off} className="lyric-line past">{'\u00A0'}</div>;
+              return (<div key={off} className={`lyric-line ${cls}`} style={(isCur && !inBreak && !showIntro && !showOutro) ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{content ?? '\u00A0'}</div>);
             })}
             {showIntro && activeLine < 0 && (
               <div className="lyric-break-info">Intro — {introCountdown}s</div>
             )}
             {inBreak && <div className="lyric-break-info">Musical break — {breakCountdown}s</div>}
+            {showOutro && <div className="lyric-break-info">Outro — {outroCountdown}s</div>}
             {[1,2].map(off => { const line = lyrics[activeLine + off]; return (<div key={off} className={`lyric-line ${classMap[String(off)]}`}>{line ? line.text : '\u00A0'}</div>); })}
           </>
         );
