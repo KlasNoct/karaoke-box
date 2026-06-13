@@ -622,7 +622,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
 
   return (
     <div className="screen">
-      <div className="page-header"><div><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ height: 48, width: 'auto', display: 'block', marginBottom: -4 }} /><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 6 }}>Library · {songs.length} song{songs.length !== 1 ? 's' : ''}</div></div></div>
+      <div className="page-header"><div><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: '100%', height: 'auto', display: 'block', marginBottom: 2, maxWidth: 312 }} /><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 6 }}>Library · {songs.length} song{songs.length !== 1 ? 's' : ''}</div></div></div>
 
       {/* Search + shuffle + edit mode toggle */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 18px 10px' }}>
@@ -1763,7 +1763,7 @@ function SettingsScreen({ settings, onSettingsChange, onRestoreSongs, songs, onA
 
   return (
     <div className="screen">
-      <div className="page-header"><div><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ height: 48, width: 'auto', display: 'block', marginBottom: -4 }} /><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 6 }}>Settings</div></div></div>
+      <div className="page-header"><div><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: '100%', height: 'auto', display: 'block', marginBottom: 2, maxWidth: 312 }} /><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 6 }}>Settings</div></div></div>
 
       {/* Internal tab bar */}
       <div className="settings-tabs-row">
@@ -1972,7 +1972,7 @@ function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDow
       {/* Header */}
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
-          <img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ height: 48, width: 'auto', display: 'block', marginBottom: -4 }} />
+          <img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: '100%', height: 'auto', display: 'block', marginBottom: 2, maxWidth: 312 }} />
           <div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 1 }}>
             Queue{hasQueue ? ` · ${queue.length} song${queue.length !== 1 ? 's' : ''} up next` : ''}
           </div>
@@ -2349,7 +2349,7 @@ export default function App() {
       <main className="app-main">
         {activeSong
           ? <PlayerScreen key={activeSong.id} {...playerProps} />
-          : <div className="desktop-empty"><i className="ti ti-microphone" aria-hidden="true" /><p>Select a song to start</p></div>
+          : <div className="desktop-empty" style={{ opacity: 1 }}><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: 'min(600px, 80%)', maxHeight: '40vh', height: 'auto', objectFit: 'contain' }} /><p style={{ opacity: 0.4 }}>Select a song to start</p></div>
         }
       </main>
     </div>
