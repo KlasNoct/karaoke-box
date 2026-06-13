@@ -476,10 +476,57 @@ export default function Uploader() {
     setItems(merged);
   }, []);
 
-  const onDrop = useCallback(e => {
+  // ── Recursive folder reader ────────────────────────────────────────────────
+  // Walks a FileSystemEntry tree and resolves with all File objects found.
+  // Non-MP3 files are filtered out after collection.
+  function readEntryFiles(entry) {
+    return new Promise(resolve => {
+      if (entry.isFile) {
+        entry.file(f => resolve([f]), () => resolve([]));
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        const allEntries = [];
+        // createReader only returns up to 100 entries per call — must loop
+        function readBatch() {
+          reader.readEntries(batch => {
+            if (!batch.length) {
+              // All entries collected — recurse into each
+              Promise.all(allEntries.map(readEntryFiles))
+                .then(results => resolve(results.flat()));
+            } else {
+              allEntries.push(...batch);
+              readBatch();
+            }
+          }, () => resolve([]));
+        }
+        readBatch();
+      } else {
+        resolve([]);
+      }
+    });
+  }
+
+  const onDrop = useCallback(async e => {
     e.preventDefault();
     setDragOver(false);
-    handleFiles(e.dataTransfer.files);
+
+    const items = Array.from(e.dataTransfer.items || []);
+
+    // Use DataTransferItem entry API if available (supports folders)
+    if (items.length > 0 && items[0].webkitGetAsEntry) {
+      const entries = items.map(i => i.webkitGetAsEntry()).filter(Boolean);
+      const allFiles = (await Promise.all(entries.map(readEntryFiles))).flat();
+      const mp3s = allFiles.filter(f =>
+        f.type === 'audio/mpeg' || f.name.toLowerCase().endsWith('.mp3')
+      );
+      if (mp3s.length > 0) {
+        // Build a FileList-like array and pass to handleFiles
+        handleFiles(mp3s);
+      }
+    } else {
+      // Fallback for browsers without entry API
+      handleFiles(e.dataTransfer.files);
+    }
   }, [handleFiles]);
 
   const onDragOver = useCallback(e => { e.preventDefault(); setDragOver(true); }, []);
