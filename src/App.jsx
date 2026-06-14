@@ -595,7 +595,14 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
   const [sortBy, setSortBy]   = useState('date');    // 'date' | 'song' | 'artist'
   const [sortDir, setSortDir] = useState('asc');     // 'asc' | 'desc' — only used for 'song' and 'artist'
   const [favOnly, setFavOnly] = useState(false);
-  const [editMode, setEditMode] = useState(false);
+  const [editMode, setEditMode] = useState(() => localStorage.getItem('kk_editMode') === 'true');
+  function toggleEditMode() {
+    setEditMode(v => {
+      const next = !v;
+      localStorage.setItem('kk_editMode', String(next));
+      return next;
+    });
+  }
 
   // Clicking a sort key: if already active, flip direction; otherwise activate it (asc)
   function handleSort(key) {
@@ -644,7 +651,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         </button>
         <button
           className="shuffle-btn"
-          onClick={() => setEditMode(v => !v)}
+          onClick={toggleEditMode}
           aria-label={editMode ? 'Exit edit mode' : 'Edit songs'}
           title={editMode ? 'Exit edit mode' : 'Edit songs'}
           style={{ color: editMode ? 'var(--amber)' : undefined }}
