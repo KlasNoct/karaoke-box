@@ -589,12 +589,19 @@ const EDITOR_COLORS = [
 ];
 
 
+// ── SONG TAGS ────────────────────────────────────────────────────────────────
+const SONG_TAGS = [
+  'Pop','Rock','Electro','HipHop','Soul','Funk','Progg','Reggae','Country',
+  'Jazz','Blues','Punk','Swedish','Skånskt','Latin','Party','Ballad',
+  "60's","70's","80's","90's","2000's",'favourite',
+];
+
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
 function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onStartRandom, onToggleFavourite, showHidden }) {
   const [q, setQ]             = useState('');
   const [sortBy, setSortBy]   = useState('date');    // 'date' | 'song' | 'artist'
   const [sortDir, setSortDir] = useState('asc');     // 'asc' | 'desc' — only used for 'song' and 'artist'
-  const [favOnly, setFavOnly] = useState(false);
+  const [activeTags, setActiveTags] = useState([]);
   const [editMode, setEditMode] = useState(() => localStorage.getItem('kk_editMode') === 'true');
   function toggleEditMode() {
     setEditMode(v => {
@@ -623,10 +630,11 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
 
   const visible = songs
     .filter(s => {
-      const matchQ   = s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase());
-      const matchFav = !favOnly || (s.tags || []).includes('favourite');
+      const matchQ      = s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase());
       const matchHidden = showHidden || !s.hidden;
-      return matchQ && matchFav && matchHidden;
+      // AND logic: song must have ALL active tags
+      const matchTags   = activeTags.length === 0 || activeTags.every(tag => (s.tags || []).includes(tag));
+      return matchQ && matchHidden && matchTags;
     })
     .sort((a, b) => {
       let cmp = 0;
@@ -660,29 +668,8 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         </button>
       </div>
 
-      {/* Star filter + sort pills */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 18px 12px', overflowX: 'auto' }}>
-        {/* Star filter pill */}
-        <button
-          onClick={() => setFavOnly(v => !v)}
-          title={favOnly ? 'Show all songs' : 'Show favourites only'}
-          aria-label={favOnly ? 'Show all songs' : 'Show favourites only'}
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: '4px 9px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
-            fontSize: 13, transition: 'background 0.15s, color 0.15s',
-            background: favOnly ? 'rgba(244,168,39,0.18)' : 'var(--surface)',
-            border: favOnly ? '1px solid rgba(244,168,39,0.45)' : '1px solid var(--border)',
-            color: favOnly ? 'var(--amber)' : 'var(--muted)',
-          }}
-        >
-          <i className={`ti ${favOnly ? 'ti-star-filled' : 'ti-star'}`} aria-hidden="true" />
-        </button>
-
-        {/* Divider */}
-        <div style={{ width: 1, height: 18, background: 'var(--border)', flexShrink: 0 }} />
-
-        {/* Sort pills */}
+      {/* Sort pills */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 18px 8px', overflowX: 'auto' }}>
         {SORTS.map(s => {
           const active = sortBy === s.key;
           const showDir = active && s.key !== 'date';
@@ -713,12 +700,60 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         })}
       </div>
 
+      {/* Tag filter pills — scrollable row, all 23 tags + favourite */}
+      <div style={{ display: 'flex', gap: 5, padding: '0 18px 10px', overflowX: 'auto', scrollbarWidth: 'none' }}>
+        {SONG_TAGS.map(tag => {
+          const isOn = activeTags.includes(tag);
+          const label = tag === 'favourite' ? '★ Favourite' : tag;
+          return (
+            <button
+              key={tag}
+              onClick={() => setActiveTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag])}
+              style={{
+                padding: '3px 10px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
+                fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
+                transition: 'background 0.15s, color 0.15s, border-color 0.15s',
+                background: isOn ? 'rgba(244,168,39,0.15)' : 'transparent',
+                border: isOn ? '1px solid rgba(244,168,39,0.4)' : '1px solid var(--border)',
+                color: isOn ? 'var(--amber)' : 'var(--muted)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+        {activeTags.length > 0 && (
+          <button
+            onClick={() => setActiveTags([])}
+            style={{
+              padding: '3px 10px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
+              fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
+              background: 'transparent', border: '1px solid var(--border)',
+              color: 'var(--muted)', whiteSpace: 'nowrap', opacity: 0.6,
+            }}
+            title="Clear all tag filters"
+          >
+            ✕ Clear
+          </button>
+        )}
+        {activeTags.length > 0 && (
+          <span style={{ fontSize: 11, color: 'var(--amber)', padding: '3px 4px', flexShrink: 0, fontWeight: 600, whiteSpace: 'nowrap', alignSelf: 'center' }}>
+            {visible.length} song{visible.length !== 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+
       {/* Song list */}
       <div style={{ padding: '0 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
         {visible.length === 0 && songs.length > 0 && (
           <p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>
-            {favOnly && !q ? 'No favourites yet — tap ★ on any song.' : `No results for "${q}"`}
+            {activeTags.length > 0 && !q
+              ? `No songs tagged with ${activeTags.map(t => t === 'favourite' ? '★ Favourite' : t).join(' + ')}.`
+              : activeTags.length > 0 && q
+              ? 'No results matching search and selected tags.'
+              : `No results for "${q}"`}
           </p>
         )}
         {visible.map(song => {
@@ -797,6 +832,7 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
   const [activeIdx, setActiveIdx]     = useState(null);
   const [saving, setSaving]           = useState(false);
   const [tuned, setTuned]             = useState(song.tuned ?? false);
+  const [localTags, setLocalTags]     = useState(song.tags || []);
   const [isDirty, setIsDirty]         = useState(false);
   const [hidden,  setHidden]          = useState(song.hidden ?? false);
   // Word chip editing
@@ -907,9 +943,9 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
     commitChip(activeChipLine, activeChipIdx);
     const sorted = [...lines].sort((a, b) => a.time - b.time);
     if (editingAlt) {
-      await onSave({ ...song, lyricsAlt: sorted, lyricsSource: 'alt', tuned, hidden });
+      await onSave({ ...song, lyricsAlt: sorted, lyricsSource: 'alt', tuned, hidden, tags: localTags });
     } else {
-      await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none', lyricsSource: 'primary', tuned, hidden });
+      await onSave({ ...song, title: localTitle.trim() || song.title, artist: localArtist.trim(), lyrics: sorted, lyricsType: sorted.length > 0 ? 'synced' : 'none', lyricsSource: 'primary', tuned, hidden, tags: localTags });
     }
     setIsDirty(false);
     setSaving(false);
@@ -960,6 +996,39 @@ function EditorScreen({ song, onSave, onBack, onDelete }) {
             <span className="card-label">Song details</span>
             <div className="field"><input value={localTitle} onChange={e => { setIsDirty(true); setLocalTitle(e.target.value); }} placeholder="Song title" /></div>
             <div className="field" style={{ marginBottom: 0 }}><input value={localArtist} onChange={e => { setIsDirty(true); setLocalArtist(e.target.value); }} placeholder="Artist name" /></div>
+          </div>
+        )}
+
+        {/* Tags */}
+        {!editingAlt && (
+          <div className="card" style={{ marginBottom: 8 }}>
+            <span className="card-label">Tags</span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 2 }}>
+              {SONG_TAGS.map(tag => {
+                const isOn  = localTags.includes(tag);
+                const label = tag === 'favourite' ? '★ Favourite' : tag;
+                return (
+                  <button
+                    key={tag}
+                    onClick={() => {
+                      setIsDirty(true);
+                      setLocalTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+                    }}
+                    style={{
+                      padding: '4px 10px', borderRadius: 20, cursor: 'pointer',
+                      fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
+                      transition: 'background 0.15s, color 0.15s, border-color 0.15s',
+                      background: isOn ? 'rgba(244,168,39,0.15)' : 'var(--surface)',
+                      border: isOn ? '1px solid rgba(244,168,39,0.4)' : '1px solid var(--border)',
+                      color: isOn ? 'var(--amber)' : 'var(--muted)',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 
