@@ -140,25 +140,34 @@ async function loadLibrary() {
   if (!supabase) return [];
   try {
     // Read from library/admin (current) and legacy library/ root (pre-migration).
-    // Once migration is complete the legacy folder will be empty, so this is safe to keep.
+    // limit:1000 overrides Supabase default cap of 100 items.
     const [adminFiles, legacyFiles] = await Promise.all([
-      supabase.storage.from('songs').list(LIBRARY_ROOT),
-      supabase.storage.from('songs').list('library'),
+      supabase.storage.from('songs').list(LIBRARY_ROOT, { limit: 1000 }),
+      supabase.storage.from('songs').list('library',    { limit: 1000 }),
     ]);
-    const adminNames  = new Set((adminFiles.data || []).map(f => f.name));
+    const adminNames = new Set((adminFiles.data || []).map(f => f.name));
     const allFiles = [
       ...(adminFiles.data || []).filter(f => f.name.endsWith('.json')).map(f => ({ name: f.name, prefix: LIBRARY_ROOT })),
       // Only include legacy root files that haven't already been migrated (not in admin)
       ...(legacyFiles.data || []).filter(f => f.name.endsWith('.json') && !adminNames.has(f.name)).map(f => ({ name: f.name, prefix: 'library' })),
     ];
     if (!allFiles.length) return [];
-    const songs = await Promise.all(
-      allFiles.map(async ({ name, prefix }) => {
-        const { data } = await supabase.storage.from('songs').download(`${prefix}/${name}`);
-        if (!data) return null;
-        try { return JSON.parse(await data.text()); } catch { return null; }
-      })
-    );
+
+    // Fetch JSONs in batches of 50 to avoid browser connection throttling
+    // on large libraries (hundreds of songs).
+    const BATCH = 50;
+    const songs = [];
+    for (let i = 0; i < allFiles.length; i += BATCH) {
+      const batch = allFiles.slice(i, i + BATCH);
+      const results = await Promise.all(
+        batch.map(async ({ name, prefix }) => {
+          const { data } = await supabase.storage.from('songs').download(`${prefix}/${name}`);
+          if (!data) return null;
+          try { return JSON.parse(await data.text()); } catch { return null; }
+        })
+      );
+      songs.push(...results);
+    }
     return songs.filter(Boolean).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
   } catch { return []; }
 }
@@ -2349,7 +2358,7 @@ export default function App() {
       <main className="app-main">
         {activeSong
           ? <PlayerScreen key={activeSong.id} {...playerProps} />
-          : <div className="desktop-empty" style={{ opacity: 1 }}><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: 'min(900px, 80%)', height: 'auto', objectFit: 'contain' }} /><p style={{ opacity: 0.4 }}>Select a song to start</p></div>
+          : <div className="desktop-empty" style={{ opacity: 1 }}><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: 'min(600px, 80%)', maxHeight: '40vh', height: 'auto', objectFit: 'contain' }} /><p style={{ opacity: 0.4 }}>Select a song to start</p></div>
         }
       </main>
     </div>
