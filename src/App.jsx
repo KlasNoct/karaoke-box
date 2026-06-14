@@ -1754,8 +1754,8 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         <div className="cinematic-progress" onClick={seek}><div className="cinematic-fill" style={{ width: `${pct}%` }} /></div>
         <span className="cinematic-time">{fmt(currentTime)} / {fmt(duration)}</span>
         {/* Sync + mic — paired audio-control actions */}
-        <button className="sync-btn" onClick={handleSync} aria-label="Sync" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-refresh" aria-hidden="true" /></button>
-        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
+        <button className="guide-toggle-btn" onClick={handleSync} aria-label="Sync" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-refresh" aria-hidden="true" /></button>
+        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
       </div>
       {hintLine}
     </div>
@@ -1790,8 +1790,8 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       <div className="progress-wrap"><div className="progress-track" onClick={seek}><div className="progress-fill" style={{ width: `${pct}%` }} /></div><div className="time-row"><span>{fmt(currentTime)}</span><span>{fmt(duration)}</span></div></div>
       <div className="guide-panel">
         {/* Sync + mic — paired audio-control actions */}
-        <button className="sync-btn" onClick={handleSync} aria-label="Sync" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-refresh" aria-hidden="true" /></button>
-        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" style={{ fontSize: 19 }} aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
+        <button className="guide-toggle-btn" onClick={handleSync} aria-label="Sync" title="Sync — re-align lyrics and guide vocals"><i className="ti ti-refresh" aria-hidden="true" /></button>
+        <button className={`guide-toggle-btn${guideVolume > 0 ? ' active' : ''}`} onClick={() => setGuideExpanded(p => !p)} aria-label="Guide vocals"><i className="ti ti-microphone" aria-hidden="true" />{guideVolume > 0 && !guideExpanded && <span style={{ fontSize: 11 }}>{Math.round(guideVolume * 100)}%</span>}</button>
         {guideExpanded && (<div className="guide-slider-wrap"><span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{guideVolume === 0 ? 'Off' : `${Math.round(guideVolume * 100)}%`}</span><input type="range" min="0" max="1" step="0.02" value={guideVolume} onChange={e => setGuideVolume(parseFloat(e.target.value))} className="guide-slider" aria-label="Guide vocals volume" /></div>)}
       </div>
       <div className="controls" style={{ opacity: isBuffering ? 0.35 : 1, transition: 'opacity 0.2s', pointerEvents: isBuffering ? 'none' : 'auto' }}>

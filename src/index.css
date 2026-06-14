@@ -276,7 +276,7 @@ textarea { resize: vertical; line-height: 1.7; }
 /* Past and Next1 share same size — italic + opacity distinguish them   */
 .lyric-line.past   { font-size: 20px; color: var(--muted); opacity: 0.35; font-style: italic; }
 .lyric-line.next1  { font-size: 20px; color: var(--muted); opacity: 0.45; }
-.lyric-line.next2  { font-size: 14px; color: var(--muted); opacity: 0.25; }
+.lyric-line.next2  { font-size: 18px; color: var(--muted); opacity: 0.25; }
 .lyric-line.active {
   font-size: 24px; font-weight: 700; color: var(--amber);
   text-shadow: 0 0 28px rgba(244,168,39,0.5), 0 0 60px rgba(244,168,39,0.15);
@@ -663,21 +663,7 @@ textarea { resize: vertical; line-height: 1.7; }
 .guide-toggle-btn.active { color: var(--amber); }
 .guide-toggle-btn i { font-size: 19px; }
 
-/* Sync button — matches guide-toggle-btn size and behaviour */
-.sync-btn {
-  display: flex;
-  align-items: center;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--muted);
-  padding: 6px 4px;
-  border-radius: 8px;
-  transition: color 0.15s;
-  flex-shrink: 0;
-}
-.sync-btn:hover { color: var(--text); }
-.sync-btn i { font-size: 19px; }
+/* Sync button uses .guide-toggle-btn class — same size and behaviour */
 
 .guide-slider-wrap {
   display: flex;
