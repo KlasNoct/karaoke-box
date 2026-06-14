@@ -1661,44 +1661,40 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         const next2Line       = lyrics[activeLine + 2];
         const activeColor     = activeLyricLine?.color || 'var(--amber)';
         const isSpecial       = inBreak || showIntro || showOutro;
+        // Display order: Past → Active → Next1 → Next2 (top to bottom)
+        // Shrink priority (what disappears first when tight):
+        //   Active: never shrinks (flexShrink 0)
+        //   Next1:  shrinks 2nd (flexShrink 1)
+        //   Past:   shrinks 3rd (flexShrink 2)
+        //   Next2:  shrinks first (flexShrink 3)
         return (
           <>
-            {/* Priority order: active → next1 → past → next2 */}
-            {/* Active — flex:1 so it claims space first before others */}
+            {/* Past — top of stack, 3rd shrink priority */}
+            <div className="lyric-line past" style={{ flexShrink: 2, minHeight: 0, overflow: 'hidden' }}>
+              {pastLine ? pastLine.text : '\u00A0'}
+            </div>
+
+            {/* Active — never shrinks */}
             <div className="lyric-line active" style={{
-              flex: '1 1 auto',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flexShrink: 0,
               ...(!isSpecial ? { color: activeColor, textShadow: `0 0 28px ${activeColor}50` } : {}),
             }}>
-              {showIntro
-                ? null
-                : showOutro
-                ? null
-                : inBreak
-                ? ' '
-                : renderActiveLine(activeLyricLine)}
+              {showIntro ? '\u00A0' : showOutro ? '\u00A0' : inBreak ? '\u00A0' : renderActiveLine(activeLyricLine)}
             </div>
 
-            {/* Intro / break / outro pills — sit inside active slot */}
-            {showIntro && activeLine < 0 && (
-              <div className="lyric-break-info" style={{ flex: '0 0 auto' }}>Intro — {introCountdown}s</div>
-            )}
-            {inBreak && <div className="lyric-break-info" style={{ flex: '0 0 auto' }}>Musical break — {breakCountdown}s</div>}
-            {showOutro && <div className="lyric-break-info" style={{ flex: '0 0 auto' }}>Outro — {outroCountdown}s</div>}
+            {/* Intro / break / outro pills */}
+            {showIntro && activeLine < 0 && <div className="lyric-break-info" style={{ flexShrink: 0 }}>Intro — {introCountdown}s</div>}
+            {inBreak && <div className="lyric-break-info" style={{ flexShrink: 0 }}>Musical break — {breakCountdown}s</div>}
+            {showOutro && <div className="lyric-break-info" style={{ flexShrink: 0 }}>Outro — {outroCountdown}s</div>}
 
-            {/* Next1 — second priority, flex-shrink:0 so it doesn't compress active */}
-            <div className="lyric-line next1" style={{ flexShrink: 0 }}>
-              {next1Line ? next1Line.text : ' '}
+            {/* Next1 — 2nd shrink priority */}
+            <div className="lyric-line next1" style={{ flexShrink: 1, minHeight: 0, overflow: 'hidden' }}>
+              {next1Line ? next1Line.text : '\u00A0'}
             </div>
 
-            {/* Past — third priority */}
-            <div className="lyric-line past" style={{ flexShrink: 0 }}>
-              {pastLine ? pastLine.text : ' '}
-            </div>
-
-            {/* Next2 — lowest priority, smallest */}
-            <div className="lyric-line next2" style={{ flexShrink: 0 }}>
-              {next2Line ? next2Line.text : ' '}
+            {/* Next2 — disappears first */}
+            <div className="lyric-line next2" style={{ flexShrink: 3, minHeight: 0, overflow: 'hidden' }}>
+              {next2Line ? next2Line.text : '\u00A0'}
             </div>
           </>
         );
