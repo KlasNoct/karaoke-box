@@ -602,6 +602,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
   const [sortBy, setSortBy]   = useState('date');    // 'date' | 'song' | 'artist'
   const [sortDir, setSortDir] = useState('asc');     // 'asc' | 'desc' — only used for 'song' and 'artist'
   const [activeTags, setActiveTags] = useState([]);
+  const [tagOpen,    setTagOpen]    = useState(false);
   const [editMode, setEditMode] = useState(() => localStorage.getItem('kk_editMode') === 'true');
   function toggleEditMode() {
     setEditMode(v => {
@@ -700,47 +701,81 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         })}
       </div>
 
-      {/* Tag filter pills — scrollable row, all 23 tags + favourite */}
-      <div style={{ display: 'flex', gap: 5, padding: '0 18px 10px', overflowX: 'auto', scrollbarWidth: 'none' }}>
-        {SONG_TAGS.map(tag => {
-          const isOn = activeTags.includes(tag);
-          const label = tag === 'favourite' ? '★ Favourite' : tag;
-          return (
-            <button
-              key={tag}
-              onClick={() => setActiveTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag])}
-              style={{
-                padding: '3px 10px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
-                fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
-                transition: 'background 0.15s, color 0.15s, border-color 0.15s',
-                background: isOn ? 'rgba(244,168,39,0.15)' : 'transparent',
-                border: isOn ? '1px solid rgba(244,168,39,0.4)' : '1px solid var(--border)',
-                color: isOn ? 'var(--amber)' : 'var(--muted)',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {label}
-            </button>
-          );
-        })}
-        {activeTags.length > 0 && (
-          <button
-            onClick={() => setActiveTags([])}
-            style={{
-              padding: '3px 10px', borderRadius: 20, cursor: 'pointer', flexShrink: 0,
-              fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
-              background: 'transparent', border: '1px solid var(--border)',
-              color: 'var(--muted)', whiteSpace: 'nowrap', opacity: 0.6,
-            }}
-            title="Clear all tag filters"
-          >
-            ✕ Clear
-          </button>
-        )}
-        {activeTags.length > 0 && (
-          <span style={{ fontSize: 11, color: 'var(--amber)', padding: '3px 4px', flexShrink: 0, fontWeight: 600, whiteSpace: 'nowrap', alignSelf: 'center' }}>
-            {visible.length} song{visible.length !== 1 ? 's' : ''}
-          </span>
+      {/* Tag filter — Option C: collapsed bar with summary, expands to full grid */}
+      <div style={{ padding: '0 18px 10px' }}>
+        {/* Collapsed bar — always visible */}
+        <button
+          onClick={() => setTagOpen(v => !v)}
+          style={{
+            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            background: activeTags.length > 0 ? 'rgba(244,168,39,0.08)' : 'var(--surface)',
+            border: activeTags.length > 0 ? '1px solid rgba(244,168,39,0.3)' : '1px solid var(--border)',
+            borderRadius: 10, padding: '8px 12px', cursor: 'pointer', fontFamily: 'var(--font-ui)',
+            transition: 'background 0.15s, border-color 0.15s',
+          }}
+          aria-expanded={tagOpen}
+          aria-label={tagOpen ? 'Close tag filter' : 'Open tag filter'}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <i className="ti ti-tag" style={{ fontSize: 14, color: activeTags.length > 0 ? 'var(--amber)' : 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
+            {activeTags.length > 0 ? (
+              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--amber)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {activeTags.map(t => t === 'favourite' ? '★ Favourite' : t).join(' · ')}
+              </span>
+            ) : (
+              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)' }}>Filter by tag</span>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            {activeTags.length > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 600 }}>
+                {visible.length} song{visible.length !== 1 ? 's' : ''}
+              </span>
+            )}
+            {activeTags.length > 0 && (
+              <button
+                onClick={e => { e.stopPropagation(); setActiveTags([]); }}
+                aria-label="Clear all tag filters"
+                style={{
+                  fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10,
+                  background: 'transparent', border: '1px solid rgba(255,255,255,0.12)',
+                  color: 'var(--muted)', cursor: 'pointer', fontFamily: 'var(--font-ui)',
+                }}
+              >✕</button>
+            )}
+            <i
+              className={`ti ${tagOpen ? 'ti-chevron-up' : 'ti-chevron-down'}`}
+              style={{ fontSize: 13, color: 'var(--muted)' }}
+              aria-hidden="true"
+            />
+          </div>
+        </button>
+
+        {/* Expanded grid */}
+        {tagOpen && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, padding: '8px 2px 2px' }}>
+            {SONG_TAGS.map(tag => {
+              const isOn  = activeTags.includes(tag);
+              const label = tag === 'favourite' ? '★ Favourite' : tag;
+              return (
+                <button
+                  key={tag}
+                  onClick={() => setActiveTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag])}
+                  style={{
+                    padding: '4px 11px', borderRadius: 20, cursor: 'pointer',
+                    fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
+                    transition: 'background 0.15s, color 0.15s, border-color 0.15s',
+                    background: isOn ? 'rgba(244,168,39,0.15)' : 'var(--surface)',
+                    border: isOn ? '1px solid rgba(244,168,39,0.4)' : '1px solid var(--border)',
+                    color: isOn ? 'var(--amber)' : 'var(--muted)',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         )}
       </div>
 
