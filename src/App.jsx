@@ -601,9 +601,21 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
   const [q, setQ]             = useState('');
   const [sortBy, setSortBy]   = useState('date');    // 'date' | 'song' | 'artist'
   const [sortDir, setSortDir] = useState('asc');     // 'asc' | 'desc' — only used for 'song' and 'artist'
-  const [activeTags,       setActiveTags]       = useState([]);
-  const [tagOpen,          setTagOpen]          = useState(false);
-  const [showUncategorized, setShowUncategorized] = useState(false);
+  const [activeTags,        setActiveTags]        = useState(() => { try { return JSON.parse(localStorage.getItem('kk_activeTags') || '[]'); } catch { return []; } });
+  const [tagOpen,           setTagOpen]           = useState(false);
+  const [showUncategorized, setShowUncategorized] = useState(() => localStorage.getItem('kk_showUncategorized') === 'true');
+
+  function updateActiveTags(fn) {
+    updateActiveTags(prev => {
+      const next = typeof fn === 'function' ? fn(prev) : fn;
+      try { localStorage.setItem('kk_activeTags', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
+  function updateShowUncategorized(val) {
+    updateShowUncategorized(val);
+    try { localStorage.setItem('kk_showUncategorized', String(val)); } catch {}
+  }
   const [editMode, setEditMode] = useState(() => localStorage.getItem('kk_editMode') === 'true');
   function toggleEditMode() {
     setEditMode(v => {
@@ -740,7 +752,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
             )}
             {(activeTags.length > 0 || showUncategorized) && (
               <button
-                onClick={e => { e.stopPropagation(); setActiveTags([]); setShowUncategorized(false); }}
+                onClick={e => { e.stopPropagation(); updateActiveTags([]); updateShowUncategorized(false); }}
                 aria-label="Clear all tag filters"
                 style={{
                   fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10,
@@ -763,8 +775,8 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
             {/* Uncategorized — special pill with dashed border, exclusive logic */}
             <button
               onClick={() => {
-                setShowUncategorized(v => !v);
-                setActiveTags([]); // clear regular tags when toggling uncategorized
+                updateShowUncategorized(v => !v);
+                updateActiveTags([]); // clear regular tags when toggling uncategorized
               }}
               style={{
                 padding: '4px 11px', borderRadius: 20, cursor: 'pointer',
@@ -784,7 +796,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
               return (
                 <button
                   key={tag}
-                  onClick={() => { setShowUncategorized(false); setActiveTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]); }}
+                  onClick={() => { updateShowUncategorized(false); updateActiveTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]); }}
                   style={{
                     padding: '4px 11px', borderRadius: 20, cursor: 'pointer',
                     fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
@@ -2451,7 +2463,7 @@ export default function App() {
 
   const playerProps   = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, nextQueuedSong: perfQueue[0] || null, hasNext: perfQueue.length > 0 || randomMode, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onReload: handleReloadSong, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
 
-  const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={setEditingSong} onStartRandom={startRandomMode} onToggleFavourite={handleToggleFavourite} showHidden={settings.showHidden ?? false} />;
+  const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={s => { shouldAutoPlayRef.current = false; setEditingSong(s); }} onStartRandom={startRandomMode} onToggleFavourite={handleToggleFavourite} showHidden={settings.showHidden ?? false} />;
   const settingsView = <SettingsScreen {...settingsProps} />;
   const queueView    = (
     <QueueScreen
