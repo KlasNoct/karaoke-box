@@ -601,8 +601,9 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
   const [q, setQ]             = useState('');
   const [sortBy, setSortBy]   = useState('date');    // 'date' | 'song' | 'artist'
   const [sortDir, setSortDir] = useState('asc');     // 'asc' | 'desc' — only used for 'song' and 'artist'
-  const [activeTags, setActiveTags] = useState([]);
-  const [tagOpen,    setTagOpen]    = useState(false);
+  const [activeTags,       setActiveTags]       = useState([]);
+  const [tagOpen,          setTagOpen]          = useState(false);
+  const [showUncategorized, setShowUncategorized] = useState(false);
   const [editMode, setEditMode] = useState(() => localStorage.getItem('kk_editMode') === 'true');
   function toggleEditMode() {
     setEditMode(v => {
@@ -633,9 +634,12 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
     .filter(s => {
       const matchQ      = s.title.toLowerCase().includes(q.toLowerCase()) || (s.artist || '').toLowerCase().includes(q.toLowerCase());
       const matchHidden = showHidden || !s.hidden;
+      // Uncategorized: no genre/decade tags (favourite doesn't count as a category)
+      const categoryTags = (s.tags || []).filter(t => t !== 'favourite');
+      const matchUncategorized = !showUncategorized || categoryTags.length === 0;
       // AND logic: song must have ALL active tags
       const matchTags   = activeTags.length === 0 || activeTags.every(tag => (s.tags || []).includes(tag));
-      return matchQ && matchHidden && matchTags;
+      return matchQ && matchHidden && matchTags && matchUncategorized;
     })
     .sort((a, b) => {
       let cmp = 0;
@@ -708,8 +712,8 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
           onClick={() => setTagOpen(v => !v)}
           style={{
             width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            background: activeTags.length > 0 ? 'rgba(244,168,39,0.08)' : 'var(--surface)',
-            border: activeTags.length > 0 ? '1px solid rgba(244,168,39,0.3)' : '1px solid var(--border)',
+            background: (activeTags.length > 0 || showUncategorized) ? 'rgba(244,168,39,0.08)' : 'var(--surface)',
+            border: (activeTags.length > 0 || showUncategorized) ? '1px solid rgba(244,168,39,0.3)' : '1px solid var(--border)',
             borderRadius: 10, padding: '8px 12px', cursor: 'pointer', fontFamily: 'var(--font-ui)',
             transition: 'background 0.15s, border-color 0.15s',
           }}
@@ -717,8 +721,10 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
           aria-label={tagOpen ? 'Close tag filter' : 'Open tag filter'}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <i className="ti ti-tag" style={{ fontSize: 14, color: activeTags.length > 0 ? 'var(--amber)' : 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
-            {activeTags.length > 0 ? (
+            <i className="ti ti-tag" style={{ fontSize: 14, color: (activeTags.length > 0 || showUncategorized) ? 'var(--amber)' : 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
+            {showUncategorized ? (
+              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--amber)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Uncategorized</span>
+            ) : activeTags.length > 0 ? (
               <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--amber)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {activeTags.map(t => t === 'favourite' ? '★ Favourite' : t).join(' · ')}
               </span>
@@ -727,14 +733,14 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            {activeTags.length > 0 && (
+            {(activeTags.length > 0 || showUncategorized) && (
               <span style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 600 }}>
                 {visible.length} song{visible.length !== 1 ? 's' : ''}
               </span>
             )}
-            {activeTags.length > 0 && (
+            {(activeTags.length > 0 || showUncategorized) && (
               <button
-                onClick={e => { e.stopPropagation(); setActiveTags([]); }}
+                onClick={e => { e.stopPropagation(); setActiveTags([]); setShowUncategorized(false); }}
                 aria-label="Clear all tag filters"
                 style={{
                   fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10,
@@ -754,13 +760,31 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         {/* Expanded grid */}
         {tagOpen && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, padding: '8px 2px 2px' }}>
+            {/* Uncategorized — special pill with dashed border, exclusive logic */}
+            <button
+              onClick={() => {
+                setShowUncategorized(v => !v);
+                setActiveTags([]); // clear regular tags when toggling uncategorized
+              }}
+              style={{
+                padding: '4px 11px', borderRadius: 20, cursor: 'pointer',
+                fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
+                transition: 'background 0.15s, color 0.15s, border-color 0.15s',
+                background: showUncategorized ? 'rgba(244,168,39,0.15)' : 'var(--surface)',
+                border: showUncategorized ? '1px solid rgba(244,168,39,0.4)' : '1px dashed var(--border)',
+                color: showUncategorized ? 'var(--amber)' : 'var(--muted)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Uncategorized
+            </button>
             {SONG_TAGS.map(tag => {
               const isOn  = activeTags.includes(tag);
               const label = tag === 'favourite' ? '★ Favourite' : tag;
               return (
                 <button
                   key={tag}
-                  onClick={() => setActiveTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag])}
+                  onClick={() => { setShowUncategorized(false); setActiveTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]); }}
                   style={{
                     padding: '4px 11px', borderRadius: 20, cursor: 'pointer',
                     fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
@@ -784,7 +808,11 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         {songs.length === 0 && (<div className="empty-state"><i className="ti ti-music" aria-hidden="true" /><h3>Your box is empty</h3><p>Tap the + button below to add your first song.</p></div>)}
         {visible.length === 0 && songs.length > 0 && (
           <p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 14, padding: '28px 0' }}>
-            {activeTags.length > 0 && !q
+            {showUncategorized && !q
+              ? 'All songs have at least one category — nothing left to categorize!'
+              : showUncategorized && q
+              ? 'No uncategorized results for that search.'
+              : activeTags.length > 0 && !q
               ? `No songs tagged with ${activeTags.map(t => t === 'favourite' ? '★ Favourite' : t).join(' + ')}.`
               : activeTags.length > 0 && q
               ? 'No results matching search and selected tags.'
