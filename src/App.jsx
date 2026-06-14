@@ -606,14 +606,14 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
   const [showUncategorized, setShowUncategorized] = useState(() => localStorage.getItem('kk_showUncategorized') === 'true');
 
   function updateActiveTags(fn) {
-    updateActiveTags(prev => {
+    setActiveTags(prev => {
       const next = typeof fn === 'function' ? fn(prev) : fn;
       try { localStorage.setItem('kk_activeTags', JSON.stringify(next)); } catch {}
       return next;
     });
   }
   function updateShowUncategorized(val) {
-    updateShowUncategorized(val);
+    setShowUncategorized(val);
     try { localStorage.setItem('kk_showUncategorized', String(val)); } catch {}
   }
   const [editMode, setEditMode] = useState(() => localStorage.getItem('kk_editMode') === 'true');
@@ -1655,27 +1655,51 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         const outroRemaining = songDuration > 0 ? songDuration - currentTime : 0;
         const showOutro      = pastLastLyric && outroRemaining > 15;
         const outroCountdown = showOutro ? Math.max(0, Math.ceil(outroRemaining)) : 0;
-        const classMap      = { '-1':'past','0':'active','1':'next1','2':'next2' };
+        const activeLyricLine = lyrics[activeLine];
+        const pastLine        = lyrics[activeLine - 1];
+        const next1Line       = lyrics[activeLine + 1];
+        const next2Line       = lyrics[activeLine + 2];
+        const activeColor     = activeLyricLine?.color || 'var(--amber)';
+        const isSpecial       = inBreak || showIntro || showOutro;
         return (
           <>
-            {[-1,0].map(off => {
-              const line      = lyrics[activeLine + off];
-              const isCur     = off === 0;
-              const lineColor = line?.color || 'var(--amber)';
-              const cls       = (isCur && inBreak) ? 'past' : classMap[String(off)];
-              const content = isCur
-                ? (showIntro ? null : renderActiveLine(line))   // null = handled by intro pill above
-                : (line ? line.text : '\u00A0');
-              if (isCur && showIntro) return <div key={off} className="lyric-line past">{'\u00A0'}</div>;
-              if (isCur && showOutro)  return <div key={off} className="lyric-line past">{'\u00A0'}</div>;
-              return (<div key={off} className={`lyric-line ${cls}`} style={(isCur && !inBreak && !showIntro && !showOutro) ? { color: lineColor, textShadow: `0 0 28px ${lineColor}50` } : undefined}>{content ?? '\u00A0'}</div>);
-            })}
+            {/* Priority order: active → next1 → past → next2 */}
+            {/* Active — flex:1 so it claims space first before others */}
+            <div className="lyric-line active" style={{
+              flex: '1 1 auto',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              ...(!isSpecial ? { color: activeColor, textShadow: `0 0 28px ${activeColor}50` } : {}),
+            }}>
+              {showIntro
+                ? null
+                : showOutro
+                ? null
+                : inBreak
+                ? ' '
+                : renderActiveLine(activeLyricLine)}
+            </div>
+
+            {/* Intro / break / outro pills — sit inside active slot */}
             {showIntro && activeLine < 0 && (
-              <div className="lyric-break-info">Intro — {introCountdown}s</div>
+              <div className="lyric-break-info" style={{ flex: '0 0 auto' }}>Intro — {introCountdown}s</div>
             )}
-            {inBreak && <div className="lyric-break-info">Musical break — {breakCountdown}s</div>}
-            {showOutro && <div className="lyric-break-info">Outro — {outroCountdown}s</div>}
-            {[1,2].map(off => { const line = lyrics[activeLine + off]; return (<div key={off} className={`lyric-line ${classMap[String(off)]}`}>{line ? line.text : '\u00A0'}</div>); })}
+            {inBreak && <div className="lyric-break-info" style={{ flex: '0 0 auto' }}>Musical break — {breakCountdown}s</div>}
+            {showOutro && <div className="lyric-break-info" style={{ flex: '0 0 auto' }}>Outro — {outroCountdown}s</div>}
+
+            {/* Next1 — second priority, flex-shrink:0 so it doesn't compress active */}
+            <div className="lyric-line next1" style={{ flexShrink: 0 }}>
+              {next1Line ? next1Line.text : ' '}
+            </div>
+
+            {/* Past — third priority */}
+            <div className="lyric-line past" style={{ flexShrink: 0 }}>
+              {pastLine ? pastLine.text : ' '}
+            </div>
+
+            {/* Next2 — lowest priority, smallest */}
+            <div className="lyric-line next2" style={{ flexShrink: 0 }}>
+              {next2Line ? next2Line.text : ' '}
+            </div>
           </>
         );
       })()}

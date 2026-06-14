@@ -268,9 +268,11 @@ textarea { resize: vertical; line-height: 1.7; }
   transition: all 0.32s ease;
   line-height: 1.45;
 }
-.lyric-line.past   { font-size: 18px; color: var(--muted); opacity: 0.35; padding: 5px 0; font-style: italic; }
+/* Priority order in layout: active (flex:1) → next1 → past → next2 */
+/* Past and next1 share same size — distinguished by italic/colour only */
+.lyric-line.past   { font-size: 20px; color: var(--muted); opacity: 0.35; padding: 5px 0; font-style: italic; }
 .lyric-line.next1  { font-size: 20px; color: var(--muted); opacity: 0.45; padding: 6px 0; }
-.lyric-line.next2  { font-size: 13px; color: var(--muted); opacity: 0.25; padding: 5px 0; }
+.lyric-line.next2  { font-size: 14px; color: var(--muted); opacity: 0.25; padding: 4px 0; }
 .lyric-line.active {
   font-size: 24px; font-weight: 700; color: var(--amber);
   text-shadow: 0 0 28px rgba(244,168,39,0.5), 0 0 60px rgba(244,168,39,0.15);
@@ -715,13 +717,19 @@ textarea { resize: vertical; line-height: 1.7; }
   .player-screen .lyric-line.active {
     font-size: clamp(32px, 5.5vw, 62px) !important;
   }
-  .player-screen .lyric-line.next1 {
-    font-size: clamp(32px, 5.5vw, 62px) !important;
+  /* Past and next1 same size on desktop — distinguished by italic/colour */
+  .player-screen .lyric-line.next1,
+  .player-screen .lyric-line.past {
+    font-size: clamp(24px, 3.2vw, 40px) !important;
     opacity: 0.45;
   }
-  .player-screen .lyric-line.past,
+  .player-screen .lyric-line.past {
+    opacity: 0.35 !important;
+    font-style: italic;
+  }
   .player-screen .lyric-line.next2 {
-    font-size: clamp(13px, 1.6vw, 18px) !important;
+    font-size: clamp(13px, 1.4vw, 18px) !important;
+    opacity: 0.25 !important;
   }
   .player-screen .lyrics-area {
     padding: 0 8vw;
