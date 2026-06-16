@@ -77,18 +77,53 @@ async function repCreate(version, input) {
   return d.id;
 }
 
+const POLL_TIMEOUT_SECONDS = 600; // 10 minutes — generous ceiling for Demucs/WhisperX
+
 async function repPoll(predId, onTick, cancelRef) {
   let elapsed = 0;
+  let unrecognizedStatusCount = 0;
   while (!cancelRef.aborted) {
     await sleep(3500); elapsed += 3.5;
-    const r = await fetch('/api/replicate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'poll', id: predId }),
-    });
-    const d = await r.json();
+
+    if (elapsed > POLL_TIMEOUT_SECONDS) {
+      throw new Error(`Timed out after ${POLL_TIMEOUT_SECONDS}s waiting for Replicate (prediction ${predId})`);
+    }
+
+    let d;
+    try {
+      const r = await fetch('/api/replicate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'poll', id: predId }),
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.error || `Poll request failed (HTTP ${r.status})`);
+      }
+      d = await r.json();
+    } catch (err) {
+      // Network blip or malformed response — don't loop forever silently,
+      // but allow a few retries before giving up (transient errors happen).
+      unrecognizedStatusCount++;
+      if (unrecognizedStatusCount > 5) {
+        throw new Error(`Polling failed repeatedly: ${err.message}`);
+      }
+      continue;
+    }
+
     onTick?.(d.status, Math.round(elapsed));
     if (d.status === 'succeeded') return d.output;
     if (d.status === 'failed' || d.status === 'canceled') throw new Error(d.error || d.status);
+
+    if (!['starting', 'processing'].includes(d.status)) {
+      // Unexpected status value — log it so we can diagnose if this recurs.
+      unrecognizedStatusCount++;
+      console.warn(`[KaraKlas Uploader] Unrecognized Replicate status: ${JSON.stringify(d.status)} for ${predId}`);
+      if (unrecognizedStatusCount > 10) {
+        throw new Error(`Stuck on unrecognized status "${d.status}" — aborting after repeated occurrences.`);
+      }
+    } else {
+      unrecognizedStatusCount = 0;
+    }
   }
   throw new Error('cancelled');
 }
