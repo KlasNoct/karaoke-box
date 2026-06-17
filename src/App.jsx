@@ -612,9 +612,12 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
       return next;
     });
   }
-  function updateShowUncategorized(val) {
-    setShowUncategorized(val);
-    try { localStorage.setItem('kk_showUncategorized', String(val)); } catch {}
+  function updateShowUncategorized(fn) {
+    setShowUncategorized(prev => {
+      const next = typeof fn === 'function' ? fn(prev) : fn;
+      try { localStorage.setItem('kk_showUncategorized', String(next)); } catch {}
+      return next;
+    });
   }
   const [editMode, setEditMode] = useState(() => localStorage.getItem('kk_editMode') === 'true');
   function toggleEditMode() {
