@@ -592,8 +592,8 @@ const EDITOR_COLORS = [
 // ── SONG TAGS ────────────────────────────────────────────────────────────────
 const SONG_TAGS = [
   'Pop','Rock','Electro','HipHop','Soul','Funk','Progg','Reggae','Country',
-  'Jazz','Blues','Punk','Swedish','Skånskt','Latin','Party','Ballad',
-  "60's","70's","80's","90's","2000's",'favourite',
+  'Jazz','Blues','Punk','Folk','Swedish','Skånskt','Latin','Party','Ballad',
+  'Classic','Seasonal',"60's","70's","80's","90's","2000's",'favourite',
 ];
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
