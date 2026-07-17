@@ -604,6 +604,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
   const [activeTags,        setActiveTags]        = useState(() => { try { return JSON.parse(localStorage.getItem('kk_activeTags') || '[]'); } catch { return []; } });
   const [tagOpen,           setTagOpen]           = useState(false);
   const [showUncategorized, setShowUncategorized] = useState(() => localStorage.getItem('kk_showUncategorized') === 'true');
+  const [showTuned,         setShowTuned]         = useState(() => localStorage.getItem('kk_showTuned') === 'true');
 
   function updateActiveTags(fn) {
     setActiveTags(prev => {
@@ -616,6 +617,13 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
     setShowUncategorized(prev => {
       const next = typeof fn === 'function' ? fn(prev) : fn;
       try { localStorage.setItem('kk_showUncategorized', String(next)); } catch {}
+      return next;
+    });
+  }
+  function updateShowTuned(fn) {
+    setShowTuned(prev => {
+      const next = typeof fn === 'function' ? fn(prev) : fn;
+      try { localStorage.setItem('kk_showTuned', String(next)); } catch {}
       return next;
     });
   }
@@ -652,9 +660,11 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
       // Uncategorized: no genre/decade tags (favourite doesn't count as a category)
       const categoryTags = (s.tags || []).filter(t => t !== 'favourite');
       const matchUncategorized = !showUncategorized || categoryTags.length === 0;
+      // Tuned: composable with other filters including Uncategorized
+      const matchTuned  = !showTuned || s.tuned === true;
       // AND logic: song must have ALL active tags
       const matchTags   = activeTags.length === 0 || activeTags.every(tag => (s.tags || []).includes(tag));
-      return matchQ && matchHidden && matchTags && matchUncategorized;
+      return matchQ && matchHidden && matchTags && matchUncategorized && matchTuned;
     })
     .sort((a, b) => {
       let cmp = 0;
@@ -666,7 +676,7 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
 
   return (
     <div className="screen">
-      <div className="page-header"><div><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: '100%', height: 'auto', display: 'block', marginBottom: 2, maxWidth: 312 }} /><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 6 }}>Library · {songs.length} song{songs.length !== 1 ? 's' : ''}</div></div></div>
+      <div className="page-header"><div><img src={activeLogo || "/KaraKlasLogo.png"} alt="KaraKlas" style={{ width: '100%', height: 'auto', display: 'block', marginBottom: 2, maxWidth: 312 }} /><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 6 }}>Library · {songs.length} song{songs.length !== 1 ? 's' : ''}</div></div></div>
 
       {/* Search + shuffle + edit mode toggle */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 18px 10px' }}>
@@ -727,8 +737,8 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
           onClick={() => setTagOpen(v => !v)}
           style={{
             width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            background: (activeTags.length > 0 || showUncategorized) ? 'rgba(244,168,39,0.08)' : 'var(--surface)',
-            border: (activeTags.length > 0 || showUncategorized) ? '1px solid rgba(244,168,39,0.3)' : '1px solid var(--border)',
+            background: (activeTags.length > 0 || showUncategorized || showTuned) ? 'rgba(244,168,39,0.08)' : 'var(--surface)',
+            border: (activeTags.length > 0 || showUncategorized || showTuned) ? '1px solid rgba(244,168,39,0.3)' : '1px solid var(--border)',
             borderRadius: 10, padding: '8px 12px', cursor: 'pointer', fontFamily: 'var(--font-ui)',
             transition: 'background 0.15s, border-color 0.15s',
           }}
@@ -736,26 +746,26 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
           aria-label={tagOpen ? 'Close tag filter' : 'Open tag filter'}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <i className="ti ti-tag" style={{ fontSize: 14, color: (activeTags.length > 0 || showUncategorized) ? 'var(--amber)' : 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
-            {showUncategorized ? (
-              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--amber)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Uncategorized</span>
-            ) : activeTags.length > 0 ? (
-              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--amber)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {activeTags.map(t => t === 'favourite' ? '★ Favourite' : t).join(' · ')}
-              </span>
-            ) : (
-              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)' }}>Filter by tag</span>
-            )}
+            <i className="ti ti-tag" style={{ fontSize: 14, color: (activeTags.length > 0 || showUncategorized || showTuned) ? 'var(--amber)' : 'var(--muted)', flexShrink: 0 }} aria-hidden="true" />
+            {(() => {
+              const parts = [];
+              if (showTuned) parts.push('✓ Tuned');
+              if (showUncategorized) parts.push('Uncategorized');
+              parts.push(...activeTags.map(t => t === 'favourite' ? '★ Favourite' : t));
+              return parts.length > 0
+                ? <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--amber)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{parts.join(' · ')}</span>
+                : <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)' }}>Filter by tag</span>;
+            })()}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            {(activeTags.length > 0 || showUncategorized) && (
+            {(activeTags.length > 0 || showUncategorized || showTuned) && (
               <span style={{ fontSize: 11, color: 'var(--amber)', fontWeight: 600 }}>
                 {visible.length} song{visible.length !== 1 ? 's' : ''}
               </span>
             )}
-            {(activeTags.length > 0 || showUncategorized) && (
+            {(activeTags.length > 0 || showUncategorized || showTuned) && (
               <button
-                onClick={e => { e.stopPropagation(); updateActiveTags([]); updateShowUncategorized(false); }}
+                onClick={e => { e.stopPropagation(); updateActiveTags([]); updateShowUncategorized(false); updateShowTuned(false); }}
                 aria-label="Clear all tag filters"
                 style={{
                   fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10,
@@ -775,6 +785,20 @@ function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onSt
         {/* Expanded grid */}
         {tagOpen && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, padding: '8px 2px 2px' }}>
+            {/* Tuned — composable with all other filters */}
+            <button
+              onClick={() => updateShowTuned(v => !v)}
+              style={{
+                padding: '4px 11px', borderRadius: 20, cursor: 'pointer',
+                fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-ui)',
+                transition: 'background 0.15s, color 0.15s, border-color 0.15s',
+                background: showTuned ? 'rgba(244,168,39,0.15)' : 'var(--surface)',
+                border: showTuned ? '1px solid rgba(244,168,39,0.4)' : '1px solid var(--border)',
+                color: showTuned ? 'var(--amber)' : 'var(--muted)',
+                whiteSpace: 'nowrap',
+              }}
+            >✓ Tuned</button>
+
             {/* Uncategorized — special pill with dashed border, exclusive logic */}
             <button
               onClick={() => {
@@ -1946,12 +1970,64 @@ function LibraryMigrationPanel() {
 }
 
 // ── SETTINGS SCREEN ─────────────────────────────────────────────────────────
-function SettingsScreen({ settings, onSettingsChange, onRestoreSongs, songs, onAddSong, queue, queueRunning, onAddToQueue, onRemoveFromQueue, onStartQueue }) {
+function SettingsScreen({ settings, onSettingsChange, onRestoreSongs, songs, onAddSong, queue, queueRunning, onAddToQueue, onRemoveFromQueue, onStartQueue, activeLogo, onLogoChange }) {
   const [settingsTab, setSettingsTab] = useState('songs');
+  const [logos,       setLogos]       = useState([]);   // [{ name, url, path }]
+  const [logoLoading, setLogoLoading] = useState(false);
+  const [logoError,   setLogoError]   = useState(null);
+
+  // Load logos from Supabase on mount
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.storage.from('songs').list('logos', { limit: 100 })
+      .then(({ data }) => {
+        if (!data) return;
+        const items = data
+          .filter(f => /\.(png|jpg|jpeg|webp|gif)$/i.test(f.name))
+          .map(f => {
+            const path = `logos/${f.name}`;
+            const url  = supabase.storage.from('songs').getPublicUrl(path).data.publicUrl;
+            const name = f.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+            return { name, url, path };
+          });
+        setLogos(items);
+      });
+  }, []);
+
+  async function handleLogoUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file || !supabase) return;
+    const name   = prompt('Name for this logo:', file.name.replace(/\.[^.]+$/, ''));
+    if (!name?.trim()) return;
+    const safeName = name.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/ /g, '_');
+    const ext    = file.name.split('.').pop();
+    const path   = `logos/${safeName}.${ext}`;
+    setLogoLoading(true); setLogoError(null);
+    try {
+      const { error } = await supabase.storage.from('songs').upload(path, file, { upsert: true, contentType: file.type });
+      if (error) throw error;
+      const url = supabase.storage.from('songs').getPublicUrl(path).data.publicUrl;
+      setLogos(prev => [...prev.filter(l => l.path !== path), { name: safeName.replace(/_/g, ' '), url, path }]);
+      onLogoChange(url);
+    } catch (err) {
+      setLogoError(err.message);
+    } finally {
+      setLogoLoading(false);
+      e.target.value = '';
+    }
+  }
+
+  async function handleLogoDelete(logo) {
+    if (!window.confirm(`Delete logo "${logo.name}"?`)) return;
+    if (!supabase) return;
+    await supabase.storage.from('songs').remove([logo.path]);
+    setLogos(prev => prev.filter(l => l.path !== logo.path));
+    if (activeLogo === logo.url) onLogoChange(null);
+  }
 
   return (
     <div className="screen">
-      <div className="page-header"><div><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: '100%', height: 'auto', display: 'block', marginBottom: 2, maxWidth: 312 }} /><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 6 }}>Settings</div></div></div>
+      <div className="page-header"><div><img src={activeLogo || "/KaraKlasLogo.png"} alt="KaraKlas" style={{ width: '100%', height: 'auto', display: 'block', marginBottom: 2, maxWidth: 312 }} /><div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 6 }}>Settings</div></div></div>
 
       {/* Internal tab bar */}
       <div className="settings-tabs-row">
@@ -2049,6 +2125,64 @@ function SettingsScreen({ settings, onSettingsChange, onRestoreSongs, songs, onA
               <input type="checkbox" checked={settings.showHidden ?? false} onChange={e => onSettingsChange({ showHidden: e.target.checked })} style={{ display: 'none' }} />
             </label>
           </div>
+          {/* Logo Library */}
+          <div className="card">
+            <span className="card-label">Logo</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {/* Dropdown to pick active logo */}
+              <select
+                value={activeLogo || ''}
+                onChange={e => onLogoChange(e.target.value || null)}
+                style={{ background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', color: 'var(--text)', fontSize: 13, fontFamily: 'var(--font-ui)', width: '100%' }}
+              >
+                <option value="">KaraKlas Default</option>
+                {logos.map(l => (
+                  <option key={l.path} value={l.url}>{l.name}</option>
+                ))}
+              </select>
+
+              {/* Current logo preview */}
+              <img
+                src={activeLogo || '/KaraKlasLogo.png'}
+                alt="Active logo"
+                style={{ width: '100%', maxWidth: 220, height: 'auto', borderRadius: 8, background: 'var(--bg)', padding: 8 }}
+              />
+
+              {/* Upload new logo */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleLogoUpload} disabled={logoLoading} />
+                <button
+                  onClick={e => { e.preventDefault(); e.currentTarget.parentElement.querySelector('input').click(); }}
+                  style={{ padding: '7px 14px', borderRadius: 8, background: 'var(--elevated)', border: '1px solid var(--border)', color: 'var(--text)', fontSize: 12, fontWeight: 600, fontFamily: 'var(--font-ui)', cursor: 'pointer' }}
+                  disabled={logoLoading}
+                >
+                  {logoLoading ? 'Uploading…' : '+ Upload logo'}
+                </button>
+                {logoError && <span style={{ fontSize: 11, color: 'var(--rose)' }}>{logoError}</span>}
+              </label>
+
+              {/* List of uploaded logos with delete */}
+              {logos.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {logos.map(l => (
+                    <div key={l.path} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ flex: 1, fontSize: 12, color: activeLogo === l.url ? 'var(--amber)' : 'var(--text)' }}>
+                        {activeLogo === l.url && '✓ '}{l.name}
+                      </span>
+                      <button
+                        onClick={() => handleLogoDelete(l)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', padding: 2 }}
+                        title="Delete logo"
+                      >
+                        <i className="ti ti-trash" style={{ fontSize: 13 }} aria-hidden="true" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="card"><span className="card-label">Keyboard shortcuts</span><div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 13 }}>{[['Space','Play / pause'],['Esc','Close player'],['←','Restart (or prev song if within 2s)'],['→','Skip +10s (or next random)'],['M','Toggle guide vocals mute'],['R','Toggle random mode'],['F','Fullscreen']].map(([k,v]) => (<><span key={k+'k'} style={{ fontFamily: 'monospace', background: 'var(--elevated)', padding: '1px 7px', borderRadius: 4, color: 'var(--amber)', whiteSpace: 'nowrap', alignSelf: 'start' }}>{k}</span><span key={k+'v'} style={{ color: 'var(--muted)' }}>{v}</span></>))}</div></div>
           <div className="success-box"><p style={{ fontWeight: 700, margin: '0 0 4px' }}><i className="ti ti-check" aria-hidden="true" /> Processing — server-side</p><p style={{ margin: 0, fontSize: 13, lineHeight: 1.6 }}>Vocal separation, transcription, and AI lyrics correction run via <code>/api/</code> endpoints. Keys in Vercel env vars.</p></div>
         </div>
@@ -2160,7 +2294,7 @@ function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDow
       {/* Header */}
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
-          <img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: '100%', height: 'auto', display: 'block', marginBottom: 2, maxWidth: 312 }} />
+          <img src={activeLogo || "/KaraKlasLogo.png"} alt="KaraKlas" style={{ width: '100%', height: 'auto', display: 'block', marginBottom: 2, maxWidth: 312 }} />
           <div className="page-sub" style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--muted)', marginTop: 1 }}>
             Queue{hasQueue ? ` · ${queue.length} song${queue.length !== 1 ? 's' : ''} up next` : ''}
           </div>
@@ -2269,6 +2403,9 @@ export default function App() {
   const [songs, setSongs]           = useState([]);
   const [activeSong, setActiveSong] = useState(null);
   const [editingSong, setEditingSong] = useState(null);
+  const [activeLogo,  setActiveLogo]  = useState(() => {
+    try { return localStorage.getItem('kk_activeLogo') || null; } catch { return null; }
+  });
   const [loading, setLoading]       = useState(true);
   const [randomMode, setRandomMode] = useState(false);
   const [nextUpSong, setNextUpSong] = useState(null);
@@ -2492,7 +2629,7 @@ export default function App() {
   const playerProps   = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, nextQueuedSong: perfQueue[0] || null, hasNext: perfQueue.length > 0 || randomMode, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onReload: handleReloadSong, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
 
   const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={s => { shouldAutoPlayRef.current = false; setEditingSong(s); }} onStartRandom={startRandomMode} onToggleFavourite={handleToggleFavourite} showHidden={settings.showHidden ?? false} />;
-  const settingsView = <SettingsScreen {...settingsProps} />;
+  const settingsView = <SettingsScreen {...settingsProps} activeLogo={activeLogo} onLogoChange={url => { setActiveLogo(url); try { if (url) localStorage.setItem('kk_activeLogo', url); else localStorage.removeItem('kk_activeLogo'); } catch {} }} />;
   const queueView    = (
     <QueueScreen
       queue={perfQueue}
@@ -2537,7 +2674,7 @@ export default function App() {
       <main className="app-main">
         {activeSong
           ? <PlayerScreen key={activeSong.id} {...playerProps} />
-          : <div className="desktop-empty" style={{ opacity: 1 }}><img src="/KaraKlasLogo.png" alt="KaraKlas" style={{ width: 'min(600px, 80%)', maxHeight: '40vh', height: 'auto', objectFit: 'contain' }} /><p style={{ opacity: 0.4 }}>Select a song to start</p></div>
+          : <div className="desktop-empty" style={{ opacity: 1 }}><img src={activeLogo || "/KaraKlasLogo.png"} alt="KaraKlas" style={{ width: 'min(600px, 80%)', maxHeight: '40vh', height: 'auto', objectFit: 'contain' }} /><p style={{ opacity: 0.4 }}>Select a song to start</p></div>
         }
       </main>
     </div>
