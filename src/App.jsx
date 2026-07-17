@@ -1658,6 +1658,8 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
         const outroRemaining = songDuration > 0 ? songDuration - currentTime : 0;
         const showOutro      = pastLastLyric && outroRemaining > 15;
         const outroCountdown = showOutro ? Math.max(0, Math.ceil(outroRemaining)) : 0;
+        // pulseKey changes every time activeLine changes — used to retrigger CSS pulse animation
+        const pulseKey        = activeLine;
         const activeLyricLine = lyrics[activeLine];
         const pastLine        = lyrics[activeLine - 1];
         const next1Line       = lyrics[activeLine + 1];
@@ -1677,8 +1679,8 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
               {pastLine ? pastLine.text : '\u00A0'}
             </div>
 
-            {/* Active — never shrinks */}
-            <div className="lyric-line active" style={{
+            {/* Active — never shrinks, pulse animation resets on each new line */}
+            <div key={pulseKey} className="lyric-line active pulse" style={{
               flexShrink: 0,
               ...(!isSpecial ? { color: activeColor, textShadow: `0 0 28px ${activeColor}50` } : {}),
             }}>
