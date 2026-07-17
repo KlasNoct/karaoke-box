@@ -1735,7 +1735,10 @@ function PlayerScreen({ song, settings, autoPlay, randomMode, nextUpSong, nextQu
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 28px', borderBottom: '0.5px solid rgba(255,255,255,0.07)', flexShrink: 0 }}>
         <button className="player-back" onClick={onBack} aria-label="Back"><i className="ti ti-arrow-left" aria-hidden="true" /></button>
-        <p style={{ flex: 1, fontSize: 14, color: 'rgba(200,205,230,0.65)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.title}{song.artist ? ` — ${song.artist}` : ''}</p>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 34, fontWeight: 800, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.title}</div>
+          {song.artist && <div style={{ fontSize: 24, color: 'var(--muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{song.artist}</div>}
+        </div>
         {!song.audioUrl && <span className="badge badge-amber">No audio</span>}
         {hasWords && (
           <div className="lyric-mode-toggle" style={{ flexShrink: 0 }}>
