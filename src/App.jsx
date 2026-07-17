@@ -597,7 +597,7 @@ const SONG_TAGS = [
 ];
 
 // ── LIBRARY SCREEN ────────────────────────────────────────────────────────────
-function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onStartRandom, onToggleFavourite, showHidden }) {
+function LibraryScreen({ songs, onAddToQueueFront, onAddToQueueEnd, onEdit, onStartRandom, onToggleFavourite, showHidden, activeLogo }) {
   const [q, setQ]             = useState('');
   const [sortBy, setSortBy]   = useState('date');    // 'date' | 'song' | 'artist'
   const [sortDir, setSortDir] = useState('asc');     // 'asc' | 'desc' — only used for 'song' and 'artist'
@@ -2284,7 +2284,7 @@ function QueueArrow({ direction, disabled, onPress }) {
   );
 }
 
-function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDown, onShuffle, onClear, onGoToLibrary, onCancelCurrent }) {
+function QueueScreen({ queue, currentSong, onPlay, onRemove, onMoveUp, onMoveDown, onShuffle, onClear, onGoToLibrary, onCancelCurrent, activeLogo }) {
   const hasQueue    = queue.length > 0;
   const canPlay     = hasQueue && !currentSong;
 
@@ -2628,7 +2628,7 @@ export default function App() {
 
   const playerProps   = { song: activeSong, settings, autoPlay: shouldAutoPlayRef.current, randomMode, nextUpSong, nextQueuedSong: perfQueue[0] || null, hasNext: perfQueue.length > 0 || randomMode, onBack: () => { stopRandomMode(); setActiveSong(null); }, onSongEnd: handleSongEnd, onReload: handleReloadSong, onStartRandom: startRandomMode, onStopRandom: stopRandomMode, onSkipRandom: skipToNextRandom, onGoToPrevious: navigateToPrevious };
 
-  const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={s => { shouldAutoPlayRef.current = false; setEditingSong(s); }} onStartRandom={startRandomMode} onToggleFavourite={handleToggleFavourite} showHidden={settings.showHidden ?? false} />;
+  const libraryView  = <LibraryScreen songs={songs} onAddToQueueFront={perfQueueAddFront} onAddToQueueEnd={perfQueueAddEnd} onEdit={s => { shouldAutoPlayRef.current = false; setEditingSong(s); }} onStartRandom={startRandomMode} onToggleFavourite={handleToggleFavourite} showHidden={settings.showHidden ?? false} activeLogo={activeLogo} />;
   const settingsView = <SettingsScreen {...settingsProps} activeLogo={activeLogo} onLogoChange={url => { setActiveLogo(url); try { if (url) localStorage.setItem('kk_activeLogo', url); else localStorage.removeItem('kk_activeLogo'); } catch {} }} />;
   const queueView    = (
     <QueueScreen
@@ -2636,6 +2636,7 @@ export default function App() {
       currentSong={activeSong}
       onPlay={playFromPerfQueue}
       onRemove={perfQueueRemove}
+      activeLogo={activeLogo}
       onMoveUp={i => perfQueueMove(i, i - 1)}
       onMoveDown={i => perfQueueMove(i, i + 1)}
       onShuffle={perfQueueShuffle}
